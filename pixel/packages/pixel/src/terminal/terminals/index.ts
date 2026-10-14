@@ -4,6 +4,7 @@ import { ghostty } from "./ghostty";
 import { herdr } from "./herdr";
 import { kitty } from "./kitty";
 import { supacode } from "./supacode";
+import { termuxLauncher } from "./termux-launcher";
 import { tmux } from "./tmux";
 import { tty7 } from "./tty7";
 import { vscode } from "./vscode";
@@ -13,6 +14,7 @@ import { wezterm } from "./wezterm";
  * not fantastic, but ordering does matter
  */
 export const TERMINALS: Detect[] = [
+  termuxLauncher,
   herdr,
   tmux,
   tty7,
