@@ -36,6 +36,7 @@ export const COMMANDS = {
     label: "Reset UI zoom",
     keys: platform(["cmd+shift+0", "ctrl+shift+0"], ["ctrl+shift+0"]),
   },
+  "site.toggle": { label: "Toggle mobile site", keys: platform(["cmd+shift+m"], ["ctrl+shift+m"]) },
   quit: { label: "Quit", keys: platform(["ctrl+q", "ctrl+c"], ["ctrl+q"]) },
 } satisfies Record<string, CommandDef>;
 
