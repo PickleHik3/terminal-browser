@@ -4,6 +4,7 @@ import { ghostty } from "./ghostty";
 import { herdr } from "./herdr";
 import { kitty } from "./kitty";
 import { supacode } from "./supacode";
+import { termuxLauncher } from "./termux-launcher";
 import { tmux } from "./tmux";
 import { tty7 } from "./tty7";
 import { vscode } from "./vscode";
@@ -15,6 +16,7 @@ import { wezterm } from "./wezterm";
 export const TERMINALS: Detect[] = [
   herdr,
   tmux,
+  termuxLauncher,
   tty7,
   wezterm,
   kitty,
