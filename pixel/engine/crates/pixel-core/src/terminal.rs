@@ -687,7 +687,7 @@ impl Terminal {
         let reply = self.read_report(FRAME_PROBE_TIMEOUT_MS, |buf| {
             parse_probe_reply(buf, b"Gi=299;")
         })?;
-        let _ = rustix::shm::unlink(&name);
+        unlink_shm(&name);
         Ok(reply.unwrap_or(false))
     }
 
@@ -1662,6 +1662,22 @@ pub(crate) fn write_shm(name: &str, data: &[u8]) -> io::Result<()> {
 }
 
 
+// Android has no POSIX shared memory (rustix leaves shm out there): opening fails, so the
+// transport probe falls through to file frames, then inline ones.
+#[cfg(target_os = "android")]
+fn open_shm(_name: &str, _len: usize) -> io::Result<rustix::fd::OwnedFd> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn unlink_shm(_name: &str) {}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn unlink_shm(name: &str) {
+    let _ = rustix::shm::unlink(name);
+}
+
+#[cfg(not(target_os = "android"))]
 fn open_shm(name: &str, len: usize) -> io::Result<rustix::fd::OwnedFd> {
     let fd = rustix::shm::open(
         name,

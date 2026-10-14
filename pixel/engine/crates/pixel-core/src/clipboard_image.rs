@@ -52,6 +52,13 @@ pub(crate) enum WorkerPaste {
     },
 }
 
+// Android has no arboard backend; the terminal still pastes text and file paths.
+#[cfg(target_os = "android")]
+pub(crate) fn read_for_worker() -> Option<WorkerPaste> {
+    None
+}
+
+#[cfg(not(target_os = "android"))]
 pub(crate) fn read_for_worker() -> Option<WorkerPaste> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     if let Ok(files) = clipboard.get().file_list()
