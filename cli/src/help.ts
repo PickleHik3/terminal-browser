@@ -142,6 +142,23 @@ Examples:
   terminal-browser config path
 `,
   },
+  site: {
+    summary: "Show or switch between mobile and desktop sites",
+    usage: "terminal-browser site [auto|mobile|desktop]",
+    body: `
+With no argument, prints the site mode and, for auto, what it resolves to.
+With one, saves it; open browsers switch every tab and reload it.
+
+auto is mobile inside termux-launcher and desktop everywhere else. mobile sends
+an Android phone's user agent, lays pages out for a phone and turns mouse input
+into touch.
+
+Examples:
+  terminal-browser site
+  terminal-browser site desktop
+  terminal-browser site auto
+`,
+  },
   action: {
     summary: "Use the open browser through the agent-browser CLI",
     usage: "terminal-browser action [selectors] -- <command>",

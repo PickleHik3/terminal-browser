@@ -12,6 +12,10 @@ page and opening it is a way to show something you built.
 `terminal-browser ls` shows the browsers and tabs in this terminal tab, with the
 tab ids the other commands take.
 
+`terminal-browser site mobile|desktop|auto` switches every open tab between the
+mobile and desktop versions of sites and reloads them; with no argument it
+prints the current mode.
+
 `terminal-browser action -- <command>` is an agent-browser compatible CLI for a
 tab that is already open. It targets this terminal tab's browser and its active
 tab unless you select another one.
