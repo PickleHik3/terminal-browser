@@ -91,10 +91,11 @@ const splitRequest = (direction, size = null) => ({
   tty: null,
 });
 
-test("termux-launcher is known by its pane variable or TERM_PROGRAM, ahead of the multiplexers", () => {
+test("termux-launcher is known by its pane variable or TERM_PROGRAM; a multiplexer inside it wins", () => {
   assert.equal(detect({ TERMUX_LAUNCHER_PANE: "p1" }, async () => "")?.name, "termux-launcher");
   assert.equal(detect({ TERM_PROGRAM: "termux-launcher" }, async () => "")?.name, "termux-launcher");
-  assert.equal(detect({ TERMUX_LAUNCHER_PANE: "p1", HERDR_PANE_ID: "w:p" }, async () => "")?.name, "termux-launcher");
+  assert.equal(detect({ TERMUX_LAUNCHER_PANE: "p1", HERDR_PANE_ID: "w:p" }, async () => "")?.name, "herdr");
+  assert.equal(detect({ TERMUX_LAUNCHER_PANE: "p1", TMUX: "/tmp/tmux-1/default,1,0" }, async () => "")?.name, "tmux");
 });
 
 test("termux-launcher splits beside the pane it is asked from, with the token", async (t) => {
