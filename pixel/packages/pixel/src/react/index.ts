@@ -12,7 +12,7 @@ import {
   MarkRef,
   reconciler,
 } from "./reconciler-config";
-import type { PasteSource, PastedImage, SelectionPart } from "./reconciler-config";
+import type { PasteSource, PastedImage, SelectionPart, TouchEvent, TouchPoint } from "./reconciler-config";
 import type { EngineInfo, HostOptions, TerminalColors } from "./native";
 import { Surface } from "./surface";
 import { requestFrameRate } from "../web/frame-rate";
@@ -91,6 +91,8 @@ export type {
   SelectionPart,
   WheelEvent,
   PointerEvent,
+  TouchEvent,
+  TouchPoint,
   ShapeStroke,
   PathProps,
 } from "./reconciler-config";
@@ -277,6 +279,8 @@ interface EngineEventJson {
   phase?: string;
   kind?: string;
   button?: string;
+  t?: number;
+  points?: TouchPoint[];
   w?: number;
   h?: number;
   parts?: unknown[];
@@ -488,6 +492,18 @@ export function createRoot(options: RootOptions = {}): PixelRoot {
           mods: event.mods!,
           x: event.x!,
           y: event.y!,
+        });
+        break;
+      }
+      case "touch": {
+        const props = bridge.propsById[view]?.get(event.node!);
+        props?.onTouch?.({
+          kind: event.kind as TouchEvent["kind"],
+          id: event.id!,
+          x: event.x!,
+          y: event.y!,
+          t: event.t!,
+          points: event.points ?? [],
         });
         break;
       }

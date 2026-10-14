@@ -30,6 +30,7 @@ import type {
   Style,
   Surface,
   SurfaceCapture,
+  TouchEvent,
   WheelEvent,
 } from "./react";
 import { RootContext, handleEntries, useRegistryColors } from "./registry";
@@ -547,6 +548,11 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
             registry.focus(entry);
             hostRef.current?.pointer(event);
             propsRef.current.onPointer?.(event);
+          }}
+          onTouch={(event: TouchEvent) => {
+            if (menuRef.current && event.kind === "down") setMenu(null);
+            registry.focus(entry);
+            hostRef.current?.touch(event);
           }}
           onWheel={(event: WheelEvent) => {
             registry.focus(entry);

@@ -194,6 +194,7 @@ pub struct Props {
     pub scroll_events: bool,
     pub wheel_events: bool,
     pub pointer_events: bool,
+    pub touch_events: bool,
     pub hover_events: bool,
     pub outside_click_events: bool,
     pub drag_events: bool,
@@ -246,6 +247,7 @@ pub(crate) struct RNode {
     pub scroll_events: bool,
     pub wheel_events: bool,
     pub pointer_events: bool,
+    pub touch_events: bool,
     pub hover_events: bool,
     pub outside_click_events: bool,
     pub drag_events: bool,
@@ -444,6 +446,7 @@ impl Tree {
             scroll_events: props.scroll_events,
             wheel_events: props.wheel_events,
             pointer_events: props.pointer_events,
+            touch_events: props.touch_events,
             hover_events: props.hover_events,
             outside_click_events: props.outside_click_events,
             drag_events: props.drag_events,
@@ -587,6 +590,7 @@ impl Tree {
         node.scroll_events = props.scroll_events;
         node.wheel_events = props.wheel_events;
         node.pointer_events = props.pointer_events;
+        node.touch_events = props.touch_events;
         node.hover_events = props.hover_events;
         node.outside_click_events = props.outside_click_events;
         node.drag_events = props.drag_events;
@@ -1305,6 +1309,11 @@ impl Tree {
             }
         }
         None
+    }
+
+    pub fn hit_touch(&self, x: f32, y: f32) -> Option<NodeId> {
+        self.hit_pointer(x, y)
+            .filter(|&id| self.get(id).is_some_and(|node| node.touch_events))
     }
 
     pub fn hit_drag(&self, x: f32, y: f32) -> Option<NodeId> {

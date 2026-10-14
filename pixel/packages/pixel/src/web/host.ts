@@ -1,5 +1,5 @@
 import { BrowserWindow, screen } from "electron";
-import type { EngineKeyEvent, PastedImage, PointerEvent, Surface, WheelEvent } from "../react";
+import type { EngineKeyEvent, PastedImage, PointerEvent, Surface, TouchEvent, WheelEvent } from "../react";
 import {
   allowClipboardRead,
   currentDeviceEmulation,
@@ -488,6 +488,11 @@ export class PageHost {
   pointer(event: PointerEvent) {
     if (this.stopped) return;
     this.input.pointer(event);
+  }
+
+  touch(event: TouchEvent) {
+    if (this.stopped) return;
+    this.input.touch(event);
   }
 
   wheel(event: WheelEvent) {

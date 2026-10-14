@@ -1,6 +1,6 @@
 import { clipboard, ClipboardItem, nativeImage } from "electron";
 import type { WebContents } from "electron";
-import type { EngineKeyEvent, PastedImage, PointerEvent, WheelEvent } from "../react";
+import type { EngineKeyEvent, PastedImage, PointerEvent, TouchEvent, WheelEvent } from "../react";
 
 export interface InputTarget {
   contents(): WebContents;
@@ -25,6 +25,8 @@ export class PageInput {
   private sentKeys = new Set<string>();
   private superHeld = false;
   private focusGate: Promise<void> | null = null;
+  private touchEmulation: Promise<unknown> | null = null;
+  private touchQueue: Promise<unknown> = Promise.resolve();
 
   constructor(target: InputTarget) {
     this.target = target;
@@ -94,6 +96,35 @@ export class PageInput {
     });
     this.lastSentX = x;
     this.lastSentY = y;
+  }
+
+  touch(event: TouchEvent) {
+    const gate = this.syncFocus();
+    this.touchEmulation ??= this.target
+      .cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 10 })
+      .catch(() => { });
+    const scale = this.target.scale();
+    const touchPoints = event.kind === "cancel"
+      ? []
+      : event.points.map((point) => ({
+        id: point.id,
+        x: Math.max(0, point.x / scale),
+        y: Math.max(0, point.y / scale),
+      }));
+    const ready = gate
+      ? Promise.all([this.touchEmulation, gate.catch(() => { })])
+      : this.touchEmulation;
+    this.touchQueue = this.touchQueue
+      .then(() => ready)
+      .then(() => {
+        void this.target
+          .cdp("Input.dispatchTouchEvent", {
+            type: TOUCH_TYPES[event.kind],
+            touchPoints,
+            timestamp: event.t / 1000,
+          })
+          .catch(() => { });
+      });
   }
 
   wheel(event: WheelEvent) {
@@ -351,6 +382,13 @@ const SELECTION_SNIPPET = `(() => {
   return String(getSelection() ?? "");
 })()`;
 
+
+const TOUCH_TYPES: Record<TouchEvent["kind"], string> = {
+  down: "touchStart",
+  move: "touchMove",
+  up: "touchEnd",
+  cancel: "touchCancel",
+};
 
 const WHEEL_DETENT_PX = process.platform === "darwin" ? 40 : 120;
 

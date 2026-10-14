@@ -48,6 +48,21 @@ export interface PointerEvent {
   y: number;
 }
 
+export interface TouchPoint {
+  id: number;
+  x: number;
+  y: number;
+}
+
+export interface TouchEvent {
+  kind: "down" | "move" | "up" | "cancel";
+  id: number;
+  x: number;
+  y: number;
+  t: number;
+  points: TouchPoint[];
+}
+
 export interface DragEvent {
   phase: "start" | "move" | "end";
   x: number;
@@ -84,6 +99,7 @@ export interface BoxProps {
   onScroll?: (event: ScrollEvent) => void;
   onWheel?: (event: WheelEvent) => void;
   onPointer?: (event: PointerEvent) => void;
+  onTouch?: (event: TouchEvent) => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
   onMouseMove?: (event: MouseMoveEvent) => void;
@@ -340,6 +356,7 @@ function serializeProps(
     scrollEvents: !!props.onScroll,
     wheelEvents: !!props.onWheel,
     pointerEvents: !!props.onPointer,
+    touchEvents: !!props.onTouch,
     hoverEvents: !!(props.onMouseEnter || props.onMouseLeave),
     outsideClickEvents: !!props.onClickOutside,
     dragEvents: !!props.onDrag,
