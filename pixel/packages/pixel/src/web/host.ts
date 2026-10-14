@@ -1,6 +1,15 @@
 import { BrowserWindow, screen } from "electron";
 import type { EngineKeyEvent, PastedImage, PointerEvent, Surface, WheelEvent } from "../react";
-import { allowClipboardRead, onDownloadFor, routeThroughProxy } from "./browser-session";
+import {
+  allowClipboardRead,
+  currentDeviceEmulation,
+  emulateMobile,
+  emulateMobileMetrics,
+  onDeviceEmulationChange,
+  onDownloadFor,
+  routeThroughProxy,
+  stopMobileEmulation,
+} from "./browser-session";
 import type { DownloadProgress } from "./browser-session";
 import { cursorShapeFor } from "./cursor";
 import { DevtoolsWindow } from "./devtools";
@@ -88,6 +97,7 @@ export class PageHost {
   private state: WebViewState;
   private stopped = false;
   private stopWatchingFrameRate?: () => void;
+  private stopWatchingDeviceEmulation?: () => void;
   private contentFocused = false;
   private readonly input: PageInput;
   private readonly clipboardRead: boolean;
@@ -235,7 +245,22 @@ export class PageHost {
       this.handleWindowOpen(details, this.window.webContents),
     );
     this.window.webContents.on("did-create-window", (child) => this.adoptPopup(child));
-    void this.window.loadURL(options.url);
+    this.stopWatchingDeviceEmulation = onDeviceEmulationChange(() => {
+      void this.applyDeviceEmulation()
+        .catch(() => {})
+        .then(() => {
+          if (!this.stopped) this.window.webContents.reload();
+        });
+    });
+    if (currentDeviceEmulation()) {
+      void this.applyDeviceEmulation()
+        .catch(() => {})
+        .then(() => {
+          if (!this.stopped) void this.window.loadURL(options.url);
+        });
+    } else {
+      void this.window.loadURL(options.url);
+    }
     this.onState(this.state);
   }
 
@@ -264,6 +289,24 @@ export class PageHost {
     if (!options?.keepFrame) this.surface.clear();
     const size = this.contentSize(layout);
     this.window.setContentSize(size.width, size.height, false);
+    if (currentDeviceEmulation()) {
+      void emulateMobileMetrics((method, params) => this.cdp(method, params), this.mobileMetrics()).catch(() => {});
+    }
+  }
+
+  private async applyDeviceEmulation(): Promise<void> {
+    await this.attachCdp();
+    const contents = this.window.webContents;
+    const cdp = (method: string, params?: Record<string, unknown>) => this.cdp(method, params);
+    const emulation = currentDeviceEmulation();
+    if (emulation) await emulateMobile(contents, cdp, emulation, this.mobileMetrics());
+    else await stopMobileEmulation(contents, cdp);
+  }
+
+  // A zero width and height keep the page sized to the window, so later resizes need no new override.
+  private mobileMetrics() {
+    const size = this.contentSize(this.layout);
+    return { width: 0, height: 0, deviceScaleFactor: 0, screenWidth: size.width, screenHeight: size.height };
   }
 
   navigate(url: string) {
@@ -494,6 +537,8 @@ export class PageHost {
     this.devtools?.close();
     this.stopWatchingFrameRate?.();
     this.stopWatchingFrameRate = undefined;
+    this.stopWatchingDeviceEmulation?.();
+    this.stopWatchingDeviceEmulation = undefined;
     screen.off("display-added", this.onDisplayChange);
     screen.off("display-removed", this.onDisplayChange);
     screen.off("display-metrics-changed", this.onDisplayChange);
