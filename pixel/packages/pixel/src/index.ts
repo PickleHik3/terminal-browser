@@ -22,6 +22,8 @@ export type { DevtoolsDock } from "./web/types";
 export type { ZoomDirection } from "./web/zoom";
 export type { TerminalTheme } from "./web/session";
 export { QUIT_URL, defaultOpenWindow } from "./web/host";
+export { setDeviceEmulation } from "./web/browser-session";
+export type { DeviceEmulation } from "./web/browser-session";
 
 export {
   Box,

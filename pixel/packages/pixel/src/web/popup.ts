@@ -1,6 +1,7 @@
 import { nativeImage } from "electron";
 import type { BrowserWindow } from "electron";
 import type { Surface } from "../react";
+import { currentDeviceEmulation, emulateMobile } from "./browser-session";
 import { cursorShapeFor } from "./cursor";
 import { PageInput } from "./input";
 import { scaleZoom, stepZoom } from "./zoom";
@@ -131,12 +132,23 @@ export class PopupWindow {
       this.surface.present({ bgra: image.toBitmap(), width: dims.width, height: dims.height });
     });
     await this.cdp("Page.enable");
-    await this.cdp("Emulation.setDeviceMetricsOverride", {
-      width: size.width,
-      height: size.height,
-      deviceScaleFactor: renderScale,
-      mobile: false,
-    });
+    const emulation = currentDeviceEmulation();
+    if (emulation) {
+      await emulateMobile(this.window.webContents, (method, params) => this.cdp(method, params), emulation, {
+        width: size.width,
+        height: size.height,
+        deviceScaleFactor: renderScale,
+        screenWidth: size.width,
+        screenHeight: size.height,
+      });
+    } else {
+      await this.cdp("Emulation.setDeviceMetricsOverride", {
+        width: size.width,
+        height: size.height,
+        deviceScaleFactor: renderScale,
+        mobile: false,
+      });
+    }
     await this.cdp("Page.startScreencast", this.screencastParams());
   }
 

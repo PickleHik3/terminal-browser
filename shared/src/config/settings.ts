@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { AUTO, DISPLAY_FPS, UNCAPPED } from "./render";
 import { SEARCH_ENGINES, SUGGESTIONS_OFF } from "./search";
+import { SITE_MODES } from "./site";
 
 export type SettingGroup = "general" | "advanced";
 
@@ -59,6 +60,14 @@ export const SETTINGS = {
       })),
       { value: SUGGESTIONS_OFF, name: "Off", logo: null },
     ],
+  }),
+  "site.mode": setting({
+    group: "general",
+    label: "Site version",
+    hint: "Whether sites serve their mobile or desktop version. Automatic picks mobile inside termux-launcher.",
+    schema: z.enum(SITE_MODES),
+    default: AUTO,
+    choices: [plain(AUTO, "Automatic"), plain("mobile", "Mobile"), plain("desktop", "Desktop")],
   }),
   "telemetry.usage": setting({
     group: "general",
