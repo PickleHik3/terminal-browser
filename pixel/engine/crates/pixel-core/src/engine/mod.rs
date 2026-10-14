@@ -10,6 +10,7 @@ mod native_pairing;
 mod overlay;
 mod pointer;
 mod scroll;
+mod touch;
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -19,6 +20,9 @@ use compositor::Compositor;
 use hover::HoverOracle;
 use native_pairing::NativePairing;
 use pointer::DragTarget;
+use touch::Touches;
+
+pub use touch::TouchPoint;
 
 pub use overlay::HighlightArea;
 
@@ -32,7 +36,7 @@ use crate::scroll::profiles::Smooth;
 use crate::style::Color;
 use crate::terminal::{
     Event, Handoff, KeyEvent, Mods, Mouse, MouseButton, MouseKind, Retarget, Terminal,
-    TerminalColors,
+    TerminalColors, TouchKind,
 };
 use crate::text_input::InputReply;
 use crate::throttle::CpuThrottle;
@@ -237,6 +241,17 @@ pub enum EngineEvent {
         x: f32,
         y: f32,
     },
+    Touch {
+        view: usize,
+        node: NodeId,
+        key: Option<String>,
+        kind: TouchKind,
+        id: u32,
+        x: f32,
+        y: f32,
+        time: f64,
+        points: Vec<TouchPoint>,
+    },
     HoverEnter {
         view: usize,
         node: NodeId,
@@ -318,6 +333,7 @@ pub struct Engine {
     drag: Option<(usize, DragTarget)>,
     pending_click: Option<(usize, NodeId)>,
     pointer_capture: Option<(usize, NodeId)>,
+    touches: Touches,
     key_passthrough: bool,
     last_selection: Option<(
         usize,
@@ -438,6 +454,7 @@ impl Engine {
             drag: None,
             pending_click: None,
             pointer_capture: None,
+            touches: Touches::default(),
             key_passthrough: false,
             last_selection: None,
             bar_hover: None,
@@ -1010,6 +1027,7 @@ impl Engine {
                 self.resize_to(&ws, cell, "cell size report")?;
             }
             Event::Mouse(mouse) => self.handle_mouse(mouse, out)?,
+            Event::Touch(touch) => self.handle_touch(touch, out)?,
             Event::ClipboardData { items, ok } => {
                 self.clipboard
                     .handle_clipboard_data(&mut self.term, items, ok)

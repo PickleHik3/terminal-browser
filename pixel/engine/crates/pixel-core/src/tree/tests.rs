@@ -141,6 +141,37 @@ fn pointer_hit_stops_at_a_drag_surface_drawn_over_it() {
 }
 
 #[test]
+fn touch_hit_is_the_pointer_surface_only_when_it_takes_touches() {
+    let mut tree = Tree::new((200.0, 100.0));
+    let page = tree.create(Props {
+        style: Style {
+            width: Dimension::Px(200.0),
+            height: Dimension::Px(100.0),
+            ..Style::default()
+        },
+        pointer_events: true,
+        touch_events: true,
+        ..Props::default()
+    });
+    let panel = tree.create(Props {
+        style: Style {
+            position: Position::Absolute,
+            width: Dimension::Px(50.0),
+            height: Dimension::Px(50.0),
+            ..Style::default()
+        },
+        pointer_events: true,
+        ..Props::default()
+    });
+    tree.append(tree.root(), page);
+    tree.append(tree.root(), panel);
+    tree.flush_layout(&[font()], 16.0);
+    assert_eq!(tree.hit_touch(100.0, 50.0), Some(page));
+    assert_eq!(tree.hit_pointer(10.0, 10.0), Some(panel));
+    assert_eq!(tree.hit_touch(10.0, 10.0), None);
+}
+
+#[test]
 fn nodes_are_found_by_key_and_hover_swaps_their_background() {
     let block = || Desc {
         style: Style {

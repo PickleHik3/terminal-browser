@@ -36,6 +36,7 @@ impl Desc {
             scroll_events: self.scroll_events,
             wheel_events: self.wheel_events,
             pointer_events: false,
+            touch_events: false,
             hover_events: false,
             outside_click_events: false,
             drag_events: false,

@@ -1,6 +1,6 @@
 use pixel_core::{
     Engine, EngineEvent, Key, KeyEvent, KeyKind, MarkRef, Mods, MouseButton, MouseKind, NodeId,
-    ProfileData, PxRect,
+    ProfileData, PxRect, TouchKind,
 };
 use serde_json::json;
 
@@ -251,6 +251,36 @@ pub fn event_json(event: &EngineEvent, engine: &Engine, ids: &[IdMap]) -> Option
             },
             "x": x,
             "y": y,
+        }),
+        EngineEvent::Touch {
+            view,
+            node,
+            key,
+            kind,
+            id,
+            x,
+            y,
+            time,
+            points,
+        } => json!({
+            "type": "touch",
+            "view": view,
+            "node": ids.get(*view)?.ext(*node)?,
+            "key": key,
+            "kind": match kind {
+                TouchKind::Down => "down",
+                TouchKind::Move => "move",
+                TouchKind::Up => "up",
+                TouchKind::Cancel => "cancel",
+            },
+            "id": id,
+            "x": x,
+            "y": y,
+            "t": time,
+            "points": points
+                .iter()
+                .map(|p| json!({ "id": p.id, "x": p.x, "y": p.y }))
+                .collect::<Vec<_>>(),
         }),
         EngineEvent::Key { view, event } => key_json(*view, event),
         EngineEvent::Paste { view, text } => json!({

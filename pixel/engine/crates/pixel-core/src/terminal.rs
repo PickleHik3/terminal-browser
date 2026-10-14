@@ -27,6 +27,7 @@ pub enum Event {
     },
     Key(KeyEvent),
     Mouse(Mouse),
+    Touch(Touch),
     Paste(String),
     Focus(bool),
     Visible(bool),
@@ -146,6 +147,23 @@ pub enum MouseKind {
     ScrollDown,
     ScrollLeft,
     ScrollRight,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Touch {
+    pub kind: TouchKind,
+    pub id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub time: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchKind {
+    Down,
+    Move,
+    Up,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -500,7 +518,7 @@ impl Terminal {
 
         // would prefer if they weren't magic and linked to some known doc on the internet
         io.out().write_all(
-            b"\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
+            b"\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?5523h\x1b[?1004h\x1b[?2004h\x1b[?2048h\x1b[>1u",
         )?; // enable many reporting modes so we get info about mouse/keyboard
         io.out().flush()?;
 
@@ -978,6 +996,13 @@ impl Terminal {
                             y,
                         })
                     }
+                    RawEvent::Touch(kind, id, x, y, time) => Event::Touch(Touch {
+                        kind,
+                        id,
+                        x: x - 1,
+                        y: y - 1,
+                        time,
+                    }),
                     RawEvent::Clip(packet) => match self.apply_clip_packet(packet) {
                         Some(event) => event,
                         None => continue,
@@ -1730,7 +1755,7 @@ impl Drop for Terminal {
             let _ = self.io.out().write_all(b"\x1b[?2031l");
         }
         let _ = self.io.out().write_all(
-            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l",
+            b"\x1b[<u\x1b[?2048l\x1b[?2004l\x1b[?1004l\x1b[?5523l\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l",
         );
         let _ = self.io.out().flush();
         if let Some(saved) = &self.saved {
@@ -1745,6 +1770,7 @@ impl Drop for Terminal {
 enum RawEvent {
     Key(KeyEvent),
     Mouse(MouseKind, MouseButton, Mods, u32, u32),
+    Touch(TouchKind, u32, u32, u32, u32),
     Paste(String),
     Focus(bool),
     WindowSize(WindowSize),
@@ -2088,6 +2114,10 @@ fn parse_csi(buf: &[u8]) -> Option<(RawEvent, usize)> {
             Some((kind, button, mods, x, y)) => RawEvent::Mouse(kind, button, mods, x, y),
             None => RawEvent::Key(KeyEvent::plain(Key::Unknown)),
         },
+        b't' if params.starts_with(b"<") => match parse_touch(params) {
+            Some((kind, id, x, y, time)) => RawEvent::Touch(kind, id, x, y, time),
+            None => RawEvent::Key(KeyEvent::plain(Key::Unknown)),
+        },
         b't' => match (parse_resize_report(params), parse_cell_report(params)) {
             (Some(ws), _) => RawEvent::WindowSize(ws),
             (None, Some(cell)) => RawEvent::CellSize(cell),
@@ -2308,6 +2338,31 @@ fn parse_sgr_mouse(params: &[u8], press: bool) -> Option<(MouseKind, MouseButton
     Some((kind, button, mods, x, y))
 }
 
+// `CSI < kind ; pointer ; x ; y ; time t`, sent by terminals in private mode 5523.
+fn parse_touch(params: &[u8]) -> Option<(TouchKind, u32, u32, u32, u32)> {
+    let rest = params.strip_prefix(b"<")?;
+    let fields: Vec<u32> = rest
+        .split(|&b| b == b';')
+        .map(|field| std::str::from_utf8(field).ok()?.parse().ok())
+        .collect::<Option<_>>()?;
+    let &[kind, id, x, y, time] = fields.as_slice() else {
+        return None;
+    };
+    if x == 0 || y == 0 {
+        return None;
+    }
+    let kind = match kind {
+        0 => TouchKind::Down,
+        1 => TouchKind::Move,
+        2 => TouchKind::Up,
+        3 => TouchKind::Cancel,
+        _ => return None,
+    };
+    Some((kind, id, x, y, time & TOUCH_TIME_MASK))
+}
+
+pub(crate) const TOUCH_TIME_MASK: u32 = 0x7fff_ffff;
+
 fn parse_kitty_keyboard(buf: &[u8]) -> Option<bool> {
     let mut at = 0;
     while let Some(found) = buf[at..].windows(3).position(|w| w == b"\x1b[?") {
@@ -2522,6 +2577,41 @@ mod tests {
         );
         let (_, _, mods, _, _) = parse_sgr_mouse(b"<28;1;1", true).unwrap();
         assert!(mods.shift && mods.alt && mods.ctrl && !mods.sup);
+    }
+
+    #[test]
+    fn parses_touch_reports() {
+        assert_eq!(
+            parse_touch(b"<0;3;100;200;5000"),
+            Some((TouchKind::Down, 3, 100, 200, 5000))
+        );
+        assert_eq!(parse_touch(b"<1;3;101;201;5016").unwrap().0, TouchKind::Move);
+        assert_eq!(parse_touch(b"<2;3;101;201;5032").unwrap().0, TouchKind::Up);
+        assert_eq!(parse_touch(b"<3;3;101;201;5048").unwrap().0, TouchKind::Cancel);
+        assert_eq!(
+            parse_touch(b"<0;0;1;1;4294967295").unwrap().4,
+            0x7fff_ffff,
+            "only the low 31 bits of the timestamp count"
+        );
+        assert_eq!(parse_touch(b"<4;0;1;1;0"), None);
+        assert_eq!(parse_touch(b"<0;0;0;1;0"), None);
+        assert_eq!(parse_touch(b"<0;0;1;0;0"), None);
+        assert_eq!(parse_touch(b"<0;0;1;1"), None);
+        assert_eq!(parse_touch(b"<0;0;1;1;0;9"), None);
+        assert_eq!(parse_touch(b"0;0;1;1;0"), None);
+    }
+
+    #[test]
+    fn touch_reports_are_told_apart_from_window_reports() {
+        assert_eq!(
+            parse_event(b"\x1b[<1;7;40;60;123tq"),
+            Some((RawEvent::Touch(TouchKind::Move, 7, 40, 60, 123), 17))
+        );
+        assert_eq!(parse_event(b"\x1b[<1;7;40;60;12"), None, "touch mid-sequence");
+        assert!(matches!(
+            parse_event(b"\x1b[6;21;10t").unwrap().0,
+            RawEvent::CellSize((10, 21))
+        ));
     }
 
     #[test]

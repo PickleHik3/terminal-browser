@@ -29,7 +29,7 @@ pub use canvas::{Canvas, measure_text};
 pub use desc::Desc;
 pub use engine::{
     ChangeSource, DragPhase, Engine, EngineConfig, EngineEvent, FrameStats, HighlightArea,
-    HostConfig, MarkRef, px_for_cell_height,
+    HostConfig, MarkRef, TouchPoint, px_for_cell_height,
 };
 pub use kitty::kitty_transmit;
 pub use logging::{LogEntry, LogLevel};
@@ -49,7 +49,7 @@ pub use style::{
 };
 pub use terminal::{
     Event, Key, KeyEvent, KeyKind, Mods, Mouse, MouseButton, MouseKind, Terminal, TerminalColors,
-    Waker, WindowSize,
+    Touch, TouchKind, Waker, WindowSize,
 };
 pub use text_input::{
     Granularity, InputAction, InputGeometry, InputReply, MARK_CHAR, Mark, TextInput, line_height,
