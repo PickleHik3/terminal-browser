@@ -86,6 +86,8 @@ export interface HostOptions {
   browserWindowOptions: BrowserWindowOptions;
 }
 
+const MOBILE_CSS_WIDTH = 412;
+
 export class PageHost {
   readonly surface: Surface;
   private readonly popupSurface: Surface;
@@ -252,15 +254,18 @@ export class PageHost {
           if (!this.stopped) this.window.webContents.reload();
         });
     });
-    if (currentDeviceEmulation()) {
-      void this.applyDeviceEmulation()
-        .catch(() => {})
-        .then(() => {
-          if (!this.stopped) void this.window.loadURL(options.url);
-        });
-    } else {
-      void this.window.loadURL(options.url);
+    // The debugger wedges a window that has not loaded anything yet, so the user agent goes in on
+    // its own first (the first request already carries it) and the overrides wait for the DOM.
+    // The debugger wedges a window that has not loaded anything yet, so the user agent goes in on
+    // its own first (the first request already carries it) and the overrides wait for the DOM.
+    const emulation = currentDeviceEmulation();
+    if (emulation) {
+      this.window.webContents.setUserAgent(emulation.userAgent);
+      this.window.webContents.once("dom-ready", () => {
+        if (!this.stopped) void this.applyDeviceEmulation().catch(() => {});
+      });
     }
+    void this.window.loadURL(options.url);
     this.onState(this.state);
   }
 
@@ -303,10 +308,14 @@ export class PageHost {
     else await stopMobileEmulation(contents, cdp);
   }
 
-  // A zero width and height keep the page sized to the window, so later resizes need no new override.
+  // A phone shows about 412 CSS pixels across whatever its pixel width, so the window's pixels are
+  // handed out at the scale that makes it so, within what Chromium allows.
   private mobileMetrics() {
     const size = this.contentSize(this.layout);
-    return { width: 0, height: 0, deviceScaleFactor: 0, screenWidth: size.width, screenHeight: size.height };
+    const deviceScaleFactor = Math.min(3, Math.max(1, size.width / MOBILE_CSS_WIDTH));
+    const width = Math.round(size.width / deviceScaleFactor);
+    const height = Math.round(size.height / deviceScaleFactor);
+    return { width, height, deviceScaleFactor, screenWidth: width, screenHeight: height };
   }
 
   navigate(url: string) {
