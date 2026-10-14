@@ -14,9 +14,9 @@ import { wezterm } from "./wezterm";
  * not fantastic, but ordering does matter
  */
 export const TERMINALS: Detect[] = [
-  termuxLauncher,
   herdr,
   tmux,
+  termuxLauncher,
   tty7,
   wezterm,
   kitty,
