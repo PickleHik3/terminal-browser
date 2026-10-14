@@ -67,6 +67,8 @@ export type {
   ScrollEvent,
   WheelEvent,
   PointerEvent,
+  TouchEvent,
+  TouchPoint,
   PastedImage,
   PasteSource,
   CaretInfo,
