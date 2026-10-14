@@ -3,7 +3,7 @@ import net from "node:net";
 import path from "node:path";
 
 import { app, clipboard, screen } from "electron";
-import { createRoot } from "@zenbu-labs/pixel";
+import { createRoot, setDeviceEmulation } from "@zenbu-labs/pixel";
 import type {
   DevtoolsDock,
   DownloadProgress,
@@ -25,7 +25,9 @@ import {
   listApps,
   listStep,
   maxFps,
+  mobileProfile,
   renderEnv,
+  resolveSiteMode,
   setLastUrl,
   settings as settingsTable,
   SETTINGS_FILE,
@@ -34,6 +36,7 @@ import {
   store,
   SUGGESTIONS_OFF,
   TERMINAL_SOCKET_ENV,
+  toggledSiteMode,
   upgradeCommand,
 } from "shared";
 import type {
@@ -192,7 +195,10 @@ class Session {
   private readonly settings = new SettingsManager(
     {
       requestRender: () => this.render(),
-      settingsChanged: () => this.applyRenderSettings(),
+      settingsChanged: () => {
+        this.applyRenderSettings();
+        this.applySiteMode();
+      },
       toast: (text, state) => this.showToast(text, state),
       setClipboard: (text) => this.root?.setClipboard(text),
       overlayOpened: () => this.enterOverlay([]),
@@ -365,6 +371,7 @@ class Session {
     this.fontId = await this.root.registerFont(bundledFontPath());
     this.settings.setNoSuper(!this.root.info.kittyKeyboard);
     this.applyRenderSettings();
+    this.applySiteMode();
     this.settings.watch();
     this.recalculateLayout();
     this.root.setPointerShape("default");
@@ -909,6 +916,12 @@ class Session {
       case "ui.zoom.reset":
         this.zoomUi(0);
         return;
+      case "site.toggle": {
+        const next = toggledSiteMode(this.settings.get("site.mode"), process.env);
+        this.settings.actions.set("site.mode", next);
+        if (this.settings.get("site.mode") === next) this.showToast(next === "mobile" ? "Mobile sites" : "Desktop sites", "done");
+        return;
+      }
     }
   }
 
@@ -1027,6 +1040,11 @@ class Session {
     };
     root.setRender(render);
     root.setLogFile(this.settings.get("debug.logFile") === "on" ? ENGINE_LOG_FILE : null);
+  }
+
+  private applySiteMode() {
+    const mode = resolveSiteMode(this.settings.get("site.mode"), process.env);
+    setDeviceEmulation(mode === "mobile" ? mobileProfile(process.versions.chrome) : null);
   }
 
   private blurToOverlay() {
@@ -1453,6 +1471,7 @@ class Session {
       command("record.toggle"),
       command("grab.toggle"),
       command("devtools.toggle"),
+      command("site.toggle"),
       ...(DEV_BUILD
         ? [
           {
@@ -1519,6 +1538,10 @@ class Session {
         return this.activeGrab()?.active ? "Stop selection" : "Send to agent";
       case "devtools.toggle":
         return this.tabs.active?.devtools ? "Close devtools" : "Open devtools";
+      case "site.toggle":
+        return toggledSiteMode(this.settings.get("site.mode"), process.env) === "mobile"
+          ? "Use mobile sites"
+          : "Use desktop sites";
       default:
         return commandLabel(id);
     }
