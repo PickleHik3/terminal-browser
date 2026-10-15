@@ -87,60 +87,36 @@ export interface DeviceEmulation {
   };
 }
 
-export interface MobileMetrics {
-  width: number;
-  height: number;
-  deviceScaleFactor: number;
-  screenWidth: number;
-  screenHeight: number;
-}
-
 type Cdp = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
 let deviceEmulation: DeviceEmulation | null = null;
-const deviceEmulationListeners = new Set<() => void>();
 
 export function setDeviceEmulation(next: DeviceEmulation | null): void {
   if (next?.userAgent === deviceEmulation?.userAgent) return;
   deviceEmulation = next;
-  for (const listener of deviceEmulationListeners) listener();
 }
 
 export function currentDeviceEmulation(): DeviceEmulation | null {
   return deviceEmulation;
 }
 
-export function onDeviceEmulationChange(listener: () => void): () => void {
-  deviceEmulationListeners.add(listener);
-  return () => deviceEmulationListeners.delete(listener);
-}
-
-export function emulateMobileMetrics(cdp: Cdp, metrics: MobileMetrics): Promise<unknown> {
-  return cdp("Emulation.setDeviceMetricsOverride", { ...metrics, mobile: true });
-}
-
-export async function emulateMobile(
-  contents: WebContents,
-  cdp: Cdp,
-  emulation: DeviceEmulation,
-  metrics: MobileMetrics,
-): Promise<void> {
+// The window's own size and scale stay (a mobile window is made the right size by its layout
+// scale); only the mobile flag and touch are emulated, with the user agent and its client hints.
+export async function emulateMobile(contents: WebContents, cdp: Cdp, emulation: DeviceEmulation): Promise<void> {
   contents.setUserAgent(emulation.userAgent);
   await cdp("Emulation.setUserAgentOverride", {
     userAgent: emulation.userAgent,
     userAgentMetadata: emulation.userAgentMetadata,
   });
-  await emulateMobileMetrics(cdp, metrics);
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 0, height: 0, deviceScaleFactor: 0, mobile: true });
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 10 });
-  await cdp("Emulation.setEmitTouchEventsForMouse", { enabled: true, configuration: "mobile" });
 }
 
 export async function stopMobileEmulation(contents: WebContents, cdp: Cdp): Promise<void> {
   contents.setUserAgent(contents.session.getUserAgent());
   await cdp("Emulation.setUserAgentOverride", { userAgent: "" });
-  await cdp("Emulation.clearDeviceMetricsOverride");
+  await cdp("Emulation.setDeviceMetricsOverride", { width: 0, height: 0, deviceScaleFactor: 0, mobile: false });
   await cdp("Emulation.setTouchEmulationEnabled", { enabled: false });
-  await cdp("Emulation.setEmitTouchEventsForMouse", { enabled: false });
 }
 
 export function configureBrowserSession(target: Session): void {

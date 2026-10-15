@@ -4,8 +4,6 @@ import {
   allowClipboardRead,
   currentDeviceEmulation,
   emulateMobile,
-  emulateMobileMetrics,
-  onDeviceEmulationChange,
   onDownloadFor,
   routeThroughProxy,
   stopMobileEmulation,
@@ -95,11 +93,16 @@ export class PageHost {
   private readonly browserWindowOptions: BrowserWindowOptions;
   private readonly onState: (state: WebViewState) => void;
   private renderScale: number;
+  // A phone shows about 412 CSS pixels across whatever its pixel width. A mobile window's layout
+  // scale is raised to make it so, which the offscreen renderer takes as its own device scale, so
+  // the page is laid out and rastered at that size with no size emulation (an emulated size
+  // sticks to the renderer process, which later windows of the same site share). Fixed for the
+  // window's life: a site-mode change reopens the tabs.
+  private readonly mobileZoom: number;
   private layout: SurfaceLayout;
   private state: WebViewState;
   private stopped = false;
   private stopWatchingFrameRate?: () => void;
-  private stopWatchingDeviceEmulation?: () => void;
   private contentFocused = false;
   private readonly input: PageInput;
   private readonly clipboardRead: boolean;
@@ -150,6 +153,8 @@ export class PageHost {
     this.bitmaps = new BitmapPresenter(surface);
     this.popupSurface = popupSurface;
     this.background = options.background;
+    this.mobileZoom = currentDeviceEmulation() ? mobileZoomFor(layout) : 1;
+    layout = this.zoomed(layout);
     this.layout = layout;
     this.onState = onState;
     this.renderScale = renderScaleFor(layout);
@@ -247,15 +252,6 @@ export class PageHost {
       this.handleWindowOpen(details, this.window.webContents),
     );
     this.window.webContents.on("did-create-window", (child) => this.adoptPopup(child));
-    this.stopWatchingDeviceEmulation = onDeviceEmulationChange(() => {
-      void this.applyDeviceEmulation()
-        .catch(() => {})
-        .then(() => {
-          if (!this.stopped) this.window.webContents.reload();
-        });
-    });
-    // The debugger wedges a window that has not loaded anything yet, so the user agent goes in on
-    // its own first (the first request already carries it) and the overrides wait for the DOM.
     // The debugger wedges a window that has not loaded anything yet, so the user agent goes in on
     // its own first (the first request already carries it) and the overrides wait for the DOM.
     const emulation = currentDeviceEmulation();
@@ -275,6 +271,7 @@ export class PageHost {
 
   resize(layout: SurfaceLayout, options?: { keepFrame?: boolean }) {
     if (this.stopped) return;
+    layout = this.zoomed(layout);
     if (
       this.layout.x === layout.x &&
       this.layout.y === layout.y &&
@@ -294,9 +291,10 @@ export class PageHost {
     if (!options?.keepFrame) this.surface.clear();
     const size = this.contentSize(layout);
     this.window.setContentSize(size.width, size.height, false);
-    if (currentDeviceEmulation()) {
-      void emulateMobileMetrics((method, params) => this.cdp(method, params), this.mobileMetrics()).catch(() => {});
-    }
+  }
+
+  private zoomed(layout: SurfaceLayout): SurfaceLayout {
+    return this.mobileZoom === 1 ? layout : { ...layout, scale: layout.scale * this.mobileZoom };
   }
 
   private async applyDeviceEmulation(): Promise<void> {
@@ -304,18 +302,8 @@ export class PageHost {
     const contents = this.window.webContents;
     const cdp = (method: string, params?: Record<string, unknown>) => this.cdp(method, params);
     const emulation = currentDeviceEmulation();
-    if (emulation) await emulateMobile(contents, cdp, emulation, this.mobileMetrics());
+    if (emulation) await emulateMobile(contents, cdp, emulation);
     else await stopMobileEmulation(contents, cdp);
-  }
-
-  // A phone shows about 412 CSS pixels across whatever its pixel width, so the window's pixels are
-  // handed out at the scale that makes it so, within what Chromium allows.
-  private mobileMetrics() {
-    const size = this.contentSize(this.layout);
-    const deviceScaleFactor = Math.min(3, Math.max(1, size.width / MOBILE_CSS_WIDTH));
-    const width = Math.round(size.width / deviceScaleFactor);
-    const height = Math.round(size.height / deviceScaleFactor);
-    return { width, height, deviceScaleFactor, screenWidth: width, screenHeight: height };
   }
 
   navigate(url: string) {
@@ -551,8 +539,6 @@ export class PageHost {
     this.devtools?.close();
     this.stopWatchingFrameRate?.();
     this.stopWatchingFrameRate = undefined;
-    this.stopWatchingDeviceEmulation?.();
-    this.stopWatchingDeviceEmulation = undefined;
     screen.off("display-added", this.onDisplayChange);
     screen.off("display-removed", this.onDisplayChange);
     screen.off("display-metrics-changed", this.onDisplayChange);
@@ -690,6 +676,10 @@ export class PageHost {
       height: clamp(requested("height"), Math.round(content.height * 0.68), Math.round(content.height * 0.8)),
     };
   }
+}
+
+function mobileZoomFor(layout: SurfaceLayout) {
+  return Math.min(3, Math.max(1, cssSize(layout.width, layout.height, layout.scale).width / MOBILE_CSS_WIDTH));
 }
 
 function renderScaleFor(layout: SurfaceLayout) {

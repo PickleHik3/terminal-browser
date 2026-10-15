@@ -28,6 +28,7 @@ import {
   mobileProfile,
   renderEnv,
   resolveSiteMode,
+  type ResolvedSiteMode,
   setLastUrl,
   settings as settingsTable,
   SETTINGS_FILE,
@@ -219,6 +220,7 @@ class Session {
     terminal: () => this.terminal?.name ?? null,
   });
   private readonly tabs: TabManager;
+  private siteMode: ResolvedSiteMode | null = null;
   private readonly fallbackState: WebViewState;
 
   private root: Root | null = null;
@@ -1045,6 +1047,9 @@ class Session {
   private applySiteMode() {
     const mode = resolveSiteMode(this.settings.get("site.mode"), process.env);
     setDeviceEmulation(mode === "mobile" ? mobileProfile(process.versions.chrome) : null);
+    const changed = this.siteMode !== null && this.siteMode !== mode;
+    this.siteMode = mode;
+    if (changed) this.tabs.reopenAll();
   }
 
   private blurToOverlay() {

@@ -133,22 +133,13 @@ export class PopupWindow {
     });
     await this.cdp("Page.enable");
     const emulation = currentDeviceEmulation();
-    if (emulation) {
-      await emulateMobile(this.window.webContents, (method, params) => this.cdp(method, params), emulation, {
-        width: size.width,
-        height: size.height,
-        deviceScaleFactor: renderScale,
-        screenWidth: size.width,
-        screenHeight: size.height,
-      });
-    } else {
-      await this.cdp("Emulation.setDeviceMetricsOverride", {
-        width: size.width,
-        height: size.height,
-        deviceScaleFactor: renderScale,
-        mobile: false,
-      });
-    }
+    if (emulation) await emulateMobile(this.window.webContents, (method, params) => this.cdp(method, params), emulation);
+    await this.cdp("Emulation.setDeviceMetricsOverride", {
+      width: size.width,
+      height: size.height,
+      deviceScaleFactor: renderScale,
+      mobile: !!emulation,
+    });
     await this.cdp("Page.startScreencast", this.screencastParams());
   }
 

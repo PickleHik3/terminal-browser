@@ -100,9 +100,11 @@ export class PageInput {
 
   touch(event: TouchEvent) {
     const gate = this.syncFocus();
-    this.touchEmulation ??= this.target
-      .cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 10 })
-      .catch(() => { });
+    if (event.kind === "down" || !this.touchEmulation) {
+      this.touchEmulation = this.target
+        .cdp("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 10 })
+        .catch(() => { });
+    }
     const scale = this.target.scale();
     const touchPoints = event.kind === "cancel"
       ? []

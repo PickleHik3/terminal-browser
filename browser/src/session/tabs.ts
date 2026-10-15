@@ -72,7 +72,30 @@ export class TabManager {
   }
 
   create(url: string, activate = true): Tab {
-    const tab: Tab = {
+    const tab = this.fresh(url);
+    this.tabs.push(tab);
+    if (activate) this.activate(tab.id);
+    this.host.onTabsChanged();
+    this.host.requestRender();
+    return tab;
+  }
+
+  // Every tab again at its current page, each in a new web view, in place: for a change that
+  // only a new view takes, like the site mode (an offscreen view keeps the first device metrics
+  // it was given).
+  reopenAll() {
+    this.tabs = this.tabs.map((old) => {
+      const tab = this.fresh(old.state.url || old.url);
+      if (old.id === this.activeId) this.activeId = tab.id;
+      return tab;
+    });
+    this.host.onTabsChanged();
+    this.host.onActivated();
+    this.host.requestRender();
+  }
+
+  private fresh(url: string): Tab {
+    return {
       id: this.seq++,
       url,
       ref: createRef<WebViewHandle>(),
@@ -90,11 +113,6 @@ export class TabManager {
       agentControlAt: null,
       devtools: false,
     };
-    this.tabs.push(tab);
-    if (activate) this.activate(tab.id);
-    this.host.onTabsChanged();
-    this.host.requestRender();
-    return tab;
   }
 
   get(id: number): Tab | null {

@@ -46,6 +46,9 @@ function reportAndExit(error: unknown, source: CrashSource) {
     exit();
   });
 }
+// Electron's default would quit here; the browser quits through its own shutdown, and every tab
+// window goes away for a moment when the tabs reopen in fresh views.
+app.on("window-all-closed", () => {});
 process.on("uncaughtException", (error) => reportAndExit(error, "uncaughtException"));
 process.on("unhandledRejection", (reason) => {
   process.stderr.write(`${reason instanceof Error ? reason.stack : String(reason)}\n`);
