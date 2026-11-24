@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ClipboardItem, clipboard } from "electron";
+import { ClipboardItem, clipboard, nativeImage } from "electron";
 import type { NativeImage, Rectangle, WebContents } from "electron";
 import type { WebViewHandle } from "@zenbu-labs/pixel";
 import { stampedName } from "../record/paths";
@@ -99,6 +99,23 @@ async function captionImage(view: WebViewHandle, png: Buffer, cssWidth: number, 
 
 const pngBlob = (png: Buffer) => new Blob([new Uint8Array(png)], { type: "image/png" });
 
+// Electron 42 (Termux's) has no ClipboardItem; its clipboard.write takes the text and image directly.
+interface SyncClipboard {
+  write(data: { text?: string; image?: NativeImage }): void;
+}
+
+async function copyImage(png: Buffer, text?: string): Promise<void> {
+  if (typeof ClipboardItem === "function") {
+    const types: Record<string, string | Blob> = { "image/png": pngBlob(png) };
+    if (text !== undefined) types["text/plain"] = text;
+    await clipboard.write([new ClipboardItem(types)]);
+    return;
+  }
+  try {
+    (clipboard as unknown as SyncClipboard).write({ text, image: nativeImage.createFromBuffer(png) });
+  } catch {}
+}
+
 export interface GrabScreenshot extends Screenshot {
   // text/plain is the bare content, image/png has the content drawn under the screenshot
   copyWithText(): Promise<void>;
@@ -117,10 +134,10 @@ export async function grabScreenshot(
   const file = () => (saved ??= saveScreenshot(png, pageUrl));
   return {
     file,
-    copyToClipboard: () => clipboard.write([new ClipboardItem({ "image/png": pngBlob(png) })]),
+    copyToClipboard: () => copyImage(png),
     async copyWithText() {
       const captioned = await captionImage(view, png, region.width, content).catch(() => png);
-      await clipboard.write([new ClipboardItem({ "text/plain": content, "image/png": pngBlob(captioned) })]);
+      await copyImage(captioned, content);
     },
   };
 }
