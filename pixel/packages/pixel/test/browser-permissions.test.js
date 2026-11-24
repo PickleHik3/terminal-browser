@@ -126,3 +126,17 @@ test("navigating the page cancels its pending request", async () => {
   assert.equal(signal.aborted, true);
   assert.equal(contents.listenerCount("did-navigate"), 0);
 });
+
+function promptingContents(patched) {
+  const contents = fakeContents();
+  if (patched) contents.getMediaCapture = () => ({});
+  onPermissionFor(contents, { request: async () => false, check: () => "prompt" });
+  return contents;
+}
+
+test("an undecided check stays a prompt only on an Electron that understands it", () => {
+  const handlers = fakeSession();
+  const details = { requestingUrl: "https://example.com/page" };
+  assert.equal(handlers.check(promptingContents(true), "notifications", "https://example.com", details), "prompt");
+  assert.equal(handlers.check(promptingContents(false), "notifications", "https://example.com", details), false);
+});

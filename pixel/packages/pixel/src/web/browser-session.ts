@@ -57,6 +57,13 @@ export interface PermissionRequest extends PermissionCheck {
 
 export type PermissionCheckAnswer = boolean | "prompt";
 
+// Only pixel's patched Electron 44 (patch 0008) understands "prompt" from a check handler; a stock
+// Electron, like Termux's electron42, reads any string as granted. getMediaCapture comes from the
+// same patch set, so its absence means a stock Electron, where an undecided check is denied.
+function checksCanPrompt(contents: Electron.WebContents): boolean {
+  return typeof (contents as { getMediaCapture?: unknown }).getMediaCapture === "function";
+}
+
 export interface PermissionGate {
   request(request: PermissionRequest): Promise<boolean>;
   check(check: PermissionCheck): PermissionCheckAnswer;
@@ -201,12 +208,13 @@ export function configureBrowserSession(target: Session): void {
     const gate = contents ? permissionGates.get(contents.id) : undefined;
     if (!gate || !contents) return false;
     const mediaType = details.mediaType;
-    return gate.check({
+    const answer = gate.check({
       permission,
       origin: originOf(details.securityOrigin) || originOf(requestingOrigin) || requestingOrigin,
       embedder: originOf(contents.getURL()),
       mediaTypes: mediaType === "video" || mediaType === "audio" ? [mediaType] : [],
     });
+    return answer === "prompt" && !checksCanPrompt(contents) ? false : answer;
   });
 
   target.webRequest.onBeforeRequest({ urls: ["file://*", "file://*/*"] }, (details, callback) => {
