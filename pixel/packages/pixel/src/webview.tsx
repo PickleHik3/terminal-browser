@@ -573,6 +573,11 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
             hostRef.current?.pointer(event);
             propsRef.current.onPointer?.(event);
           }}
+          onTouch={(event: TouchEvent) => {
+            if (menuRef.current && event.kind === "down") setMenu(null);
+            registry.focus(entry);
+            hostRef.current?.touch(event);
+          }}
           onWheel={
             props.passWheel
               ? undefined
