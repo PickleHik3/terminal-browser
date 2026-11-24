@@ -96,6 +96,14 @@ export const SETTINGS = {
     choices: onOff,
     inverted: true,
   }),
+  "window.transparent": setting({
+    group: "general",
+    label: "Transparent website backgrounds",
+    hint: "The terminal background will show through pages without a background color",
+    schema: z.enum(["on", "off"]),
+    default: "off",
+    choices: onOff,
+  }),
   "render.fps": setting({
     group: "advanced",
     label: "Frame rate",
@@ -139,6 +147,14 @@ export const SETTINGS = {
       plain("file", "File"),
       plain("inline", "Inline"),
     ],
+  }),
+  "render.tiles": setting({
+    group: "advanced",
+    label: "Tiled image transmission",
+    hint: "Send image updates as non overlapping tiles, instead of overlaid patches",
+    schema: z.enum([AUTO, "on", "off"]),
+    default: AUTO,
+    choices: [plain(AUTO, "Automatic"), plain("on", "Yes"), plain("off", "No")],
   }),
   "render.frameEvents": setting({
     group: "advanced",

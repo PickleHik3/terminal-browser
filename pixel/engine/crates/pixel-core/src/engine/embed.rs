@@ -2,7 +2,7 @@ use std::io;
 
 use super::{Engine, EngineEvent};
 use crate::surfaces::Rect;
-use crate::terminal::{Mouse, MouseKind};
+use crate::input::{Mouse, MouseKind};
 use crate::tree::PxRect;
 
 pub(super) fn offset(rect: Rect, abs: PxRect, visible: PxRect) -> Rect {
@@ -30,6 +30,7 @@ impl Engine {
         bgra: &[u8],
         stride: usize,
         damage: Option<&[Rect]>,
+        scroll_tree: Option<std::sync::Arc<crate::surfaces::ScrollTree>>,
     ) -> io::Result<usize> {
         let row_bytes = width as usize * 4;
         if width == 0 || height == 0 || stride < row_bytes || bgra.len() < stride * height as usize {
@@ -46,6 +47,7 @@ impl Engine {
         let changed = crate::profiler::span("surface.convert", || {
             crate::surfaces::write(surface, width, height, damage, bgra, stride)
         });
+        crate::surfaces::set_scroll_tree(surface, scroll_tree);
         if let Some((thread_before, _)) = cpu
             && let Some((thread_after, _)) = crate::profiler::cpu_us()
         {
@@ -128,6 +130,7 @@ impl Engine {
                 None => {
                     let view = self.comp.view_at(point.0);
                     let local = self.comp.to_local(view, point);
+                    self.track_hover(view, local);
                     self.update_hover_target(view, local, out);
                     let Some(node) = self.comp.views[view].tree.hit_pointer(local.0, local.1)
                     else {

@@ -49,6 +49,16 @@ for (const file of fs.readdirSync(FIXTURES)) {
     await terminal.split(expect.split.request);
     assert.deepEqual(commands, expect.split.commands);
   });
+
+  if (expect.pasteKey) {
+    test(`${expect.name}: presses ctrl+v as a key, never as pasted text`, async () => {
+      const { run, commands } = recorder({ ...exec, ...Object.fromEntries(expect.pasteKey.commands.map((c) => [c, ""])) });
+      const terminal = detect(env, run);
+      await terminal.pasteKey(expect.currentPane.id);
+      assert.deepEqual(commands, expect.pasteKey.commands);
+      assert.ok(commands.every((command) => !command.includes("\x1b[200~")));
+    });
+  }
 }
 
 test("an unknown terminal is nobody", () => {
@@ -226,6 +236,33 @@ test("cmux uses pane frames from the socket and answers with the neighbor's show
   assert.deepEqual(await terminal.neighbor({ id: "s-b1", tab: "ws-1" }, "left"), { id: "s-a", tab: "ws-1" });
 });
 
+test("rex reads block rectangles from the window layout tree", async () => {
+  const layout = {
+    rect: [0, 0, 1, 1],
+    split: {
+      direction: "horizontal",
+      before: { rect: [0, 0, 0.6, 1], block_id: "block:a" },
+      after: {
+        rect: [0.6, 0, 0.4, 1],
+        split: {
+          direction: "vertical",
+          before: { rect: [0.6, 0, 0.4, 0.5], block_id: "block:b" },
+          after: { rect: [0.6, 0.5, 0.4, 0.5], block_id: "block:c" },
+        },
+      },
+    },
+  };
+  const window = JSON.stringify({ layers: [{ kind: "tiled", layout }, { kind: "floating" }] });
+  const { run } = recorder({ "rex window inspect window:1 --json": window });
+  const terminal = detect({ TERM_PROGRAM: "rex", REX_BLOCK: "block:a" }, run);
+  assert.equal(terminal?.name, "rex");
+  const at = (id) => ({ id, tab: "window:1" });
+  assert.deepEqual(await terminal.neighbor(at("block:a"), "right"), at("block:b"));
+  assert.equal(await terminal.neighbor(at("block:a"), "left"), null);
+  assert.deepEqual(await terminal.neighbor(at("block:c"), "up"), at("block:b"));
+  assert.deepEqual(await terminal.neighbor(at("block:c"), "left"), at("block:a"));
+});
+
 const GHOSTTY_ENV = {
   TERM: "xterm-ghostty",
   TERM_PROGRAM: "ghostty",
@@ -333,3 +370,26 @@ test("ghostty asks the owning instance for a split's neighbor by window and tab"
   assert.equal(commands.at(-1), `osascript -l JavaScript - ${process.ppid} neighbor w1 t1 AAAA right`);
 });
 
+// ssh carries LC_* across, so a shell on another machine says iTerm2 while osascript there
+// would have nothing to talk to. ITERM_SESSION_ID stays behind, so it is the honest signal
+test("a session reached over ssh from iTerm2 is not iTerm2", () => {
+  const env = { LC_TERMINAL: "iTerm2", LC_TERMINAL_VERSION: "3.7b", TERM: "xterm-256color" };
+  assert.equal(detect(env, async () => ""), null);
+});
+
+test("a terminal launched from iTerm2 keeps its own name", () => {
+  const env = { ...GHOSTTY_LOOKALIKE, ITERM_SESSION_ID: "w0t0p0:CLOSED" };
+  assert.equal(detect(env, async () => "")?.name, "ghostty");
+});
+
+test("iTerm2 trusts the tty over the id the shell inherited", async () => {
+  const listed = "23551\t1\tLIVE\t/dev/ttys003\n23551\t2\tOTHER\t/dev/ttys004\n";
+  for (const inheritedId of ["CLOSED", "OTHER"]) {
+    const env = { TERM_PROGRAM: "iTerm.app", ITERM_SESSION_ID: `w0t0p0:${inheritedId}` };
+    const terminal = detect(env, async () => listed);
+    assert.deepEqual(await terminal.getCurrentPane({ tty: "/dev/ttys003", cwd: "/" }), {
+      id: "LIVE",
+      tab: "23551:1",
+    });
+  }
+});

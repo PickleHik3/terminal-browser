@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pixel_core::surfaces::Rect;
+use std::sync::Arc;
+
+use pixel_core::surfaces::{Rect, ScrollTree};
 
 pub enum SurfacePixels {
     #[cfg(target_os = "macos")]
@@ -19,6 +21,7 @@ pub struct SurfaceFrame {
     pub id: u32,
     pub pixels: SurfacePixels,
     pub damage: Option<Vec<Rect>>,
+    pub scroll_tree: Option<Arc<ScrollTree>>,
 }
 
 pub enum SurfaceCommand {
@@ -49,7 +52,7 @@ pub struct SurfaceMailbox {
 }
 
 impl SurfaceMailbox {
-    pub fn submit(&self, id: u32, pixels: SurfacePixels, damage: Option<Rect>) {
+    pub fn submit(&self, id: u32, pixels: SurfacePixels, damage: Option<Rect>, scroll_tree: Option<Arc<ScrollTree>>) {
         let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
         let slot = slots.entry(id).or_default();
         let damage: Option<Vec<Rect>> = match slot.pending.take() {
@@ -74,7 +77,7 @@ impl SurfaceMailbox {
             }
             Some(Pending::Remove) | None => damage.map(|rect| vec![rect]),
         };
-        slot.pending = Some(Pending::Frame(SurfaceFrame { id, pixels, damage }));
+        slot.pending = Some(Pending::Frame(SurfaceFrame { id, pixels, damage, scroll_tree }));
         self.submitted.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -151,8 +154,8 @@ mod tests {
     #[test]
     fn keeps_only_the_latest_unpresented_frame() {
         let mailbox = SurfaceMailbox::default();
-        mailbox.submit(1, owned(1), Some(rect(0, 1)));
-        mailbox.submit(1, owned(2), Some(rect(0, 1)));
+        mailbox.submit(1, owned(1), Some(rect(0, 1)), None);
+        mailbox.submit(1, owned(2), Some(rect(0, 1)), None);
         let commands = mailbox.take();
         assert_eq!(commands.len(), 1);
         let SurfaceCommand::Frame(frame) = &commands[0] else {
@@ -168,8 +171,8 @@ mod tests {
     #[test]
     fn dropping_a_frame_keeps_its_damage_as_separate_rects() {
         let mailbox = SurfaceMailbox::default();
-        mailbox.submit(1, owned(1), Some(rect(0, 2)));
-        mailbox.submit(1, owned(2), Some(rect(8, 2)));
+        mailbox.submit(1, owned(1), Some(rect(0, 2)), None);
+        mailbox.submit(1, owned(2), Some(rect(8, 2)), None);
         let commands = mailbox.take();
         let SurfaceCommand::Frame(frame) = &commands[0] else {
             panic!("expected a frame");
@@ -180,8 +183,8 @@ mod tests {
     #[test]
     fn an_unknown_damage_region_poisons_the_union() {
         let mailbox = SurfaceMailbox::default();
-        mailbox.submit(1, owned(1), None);
-        mailbox.submit(1, owned(2), Some(rect(8, 2)));
+        mailbox.submit(1, owned(1), None, None);
+        mailbox.submit(1, owned(2), Some(rect(8, 2)), None);
         let commands = mailbox.take();
         let SurfaceCommand::Frame(frame) = &commands[0] else {
             panic!("expected a frame");
@@ -192,8 +195,8 @@ mod tests {
     #[test]
     fn a_dropped_buffer_comes_back_as_scratch() {
         let mailbox = SurfaceMailbox::default();
-        mailbox.submit(1, owned(1), None);
-        mailbox.submit(1, owned(2), None);
+        mailbox.submit(1, owned(1), None, None);
+        mailbox.submit(1, owned(2), None, None);
         assert_eq!(mailbox.take_spare(1).len(), 4);
         assert_eq!(mailbox.take_spare(1).len(), 0);
     }

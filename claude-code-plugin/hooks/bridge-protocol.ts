@@ -56,5 +56,10 @@ export const isSizeMessage = (data: unknown): data is SizeMessage =>
 export const isInputMessage = (data: unknown): data is InputMessage =>
   isRecord(data) && data.type === 'input' && Array.isArray(data.events)
 
-export const takenTexts = (value: unknown): string[] =>
-  isRecord(value) && Array.isArray(value.texts) ? value.texts.filter((t): t is string => typeof t === 'string') : []
+export type AgentText = { text: string; screenshot: string | null }
+
+const isAgentText = (value: unknown): value is AgentText =>
+  isRecord(value) && typeof value.text === 'string' && (value.screenshot === null || typeof value.screenshot === 'string')
+
+export const takenItems = (value: unknown): AgentText[] =>
+  isRecord(value) && Array.isArray(value.items) ? value.items.filter(isAgentText) : []

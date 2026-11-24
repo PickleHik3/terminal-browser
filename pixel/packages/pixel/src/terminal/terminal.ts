@@ -68,6 +68,9 @@ export interface Terminal {
   listPanes?(options?: ListPanesOptions): Promise<PaneDetails[]>;
   neighbor?(from: Pane, direction: Direction): Promise<Pane | null>;
   sendText?(pane: string, text: string): Promise<void>;
+  // Coding agents attach the clipboard image when they see a ctrl+v keypress, so this
+  // must reach the program as a key, never wrapped in a bracketed paste
+  pasteKey?(pane: string): Promise<void>;
   focusPane?(pane: string): Promise<void>;
 }
 

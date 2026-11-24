@@ -1,15 +1,10 @@
 mod capture;
-mod diff;
-mod events;
-mod highlight;
 #[cfg(target_os = "macos")]
 mod iosurface;
-mod markdown;
-mod mend;
-mod ops;
 mod record;
 mod shm;
 mod surface;
+mod terminal_ops;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,11 +17,12 @@ use napi::threadsafe_function::{
 };
 use napi::{JsFunction, Result};
 use napi_derive::napi;
-use pixel_core::{Engine, EngineConfig, TerminalColors, Waker, fontdue};
+use pixel_core::backend::Backend;
+use pixel_bridge::{IdMap, apply_ops, engine_info, event_json};
+use pixel_core::{Engine, EngineConfig, Waker};
+use pixel_terminal::TerminalBackend;
 use serde_json::json;
 
-use crate::events::event_json;
-use crate::ops::{IdMap, apply_ops};
 use crate::surface::{SurfaceCommand, SurfaceMailbox, SurfacePixels};
 
 pub struct EncodeRecordingTask {
@@ -68,7 +64,7 @@ impl Task for FilmstripTask {
     fn compute(&mut self) -> Result<Vec<u8>> {
         let mut segment = capture::Segment::open(std::path::Path::new(&self.dir))
             .map_err(|e| Error::from_reason(format!("{}: {e}", self.dir)))?;
-        let mut strip = pixel_core::Canvas::new(self.width, self.height);
+        let mut strip = pixel_raster::Canvas::new(self.width, self.height);
         strip.fill([24, 24, 26, 255]);
         for (slot, &index) in self.frames.iter().enumerate() {
             let (pixels, w, h) = segment.frame(index as usize).map_err(err)?;
@@ -156,6 +152,113 @@ impl Autoprofile {
 }
 
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScrollNodeJson {
+    element_id: f64,
+    id: i32,
+    parent_id: i32,
+    transform_id: i32,
+    container_scroll_node_id: i32,
+    container_origin: PointJson,
+    container_bounds: SizeJson,
+    bounds: SizeJson,
+    scroll_offset: PointJson,
+    user_scrollable_horizontal: bool,
+    user_scrollable_vertical: bool,
+    is_composited: bool,
+    scrolls_inner_viewport: bool,
+    scrolls_outer_viewport: bool,
+    to_screen: Vec<f64>,
+    container_to_screen: Vec<f64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScrollTreeJson {
+    scroll_tree: Vec<ScrollNodeJson>,
+    #[serde(default)]
+    drawn_layers: Vec<DrawnLayerJson>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DrawnLayerJson {
+    layer_id: i32,
+    rect: RectJson,
+    scroll_node_id: i32,
+    contents_opaque: bool,
+    screen_space_transform: Vec<f64>,
+    whole_pixel_translation: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RectJson {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct PointJson {
+    x: f64,
+    y: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct SizeJson {
+    width: f64,
+    height: f64,
+}
+
+fn matrix(values: &[f64]) -> Option<[f32; 16]> {
+    let values: [f64; 16] = values.try_into().ok()?;
+    Some(values.map(|v| v as f32))
+}
+
+fn scroll_tree(json: Option<String>) -> Option<std::sync::Arc<pixel_core::surfaces::ScrollTree>> {
+    let tree: ScrollTreeJson = serde_json::from_str(&json?).ok()?;
+    let drawn_layers = tree
+        .drawn_layers
+        .into_iter()
+        .map(|l| pixel_core::surfaces::DrawnLayer {
+            layer_id: l.layer_id,
+            rect: (l.rect.x as i32, l.rect.y as i32, l.rect.width.max(0.0) as u32, l.rect.height.max(0.0) as u32),
+            scroll_node_id: l.scroll_node_id,
+            contents_opaque: l.contents_opaque,
+            translation: (l.whole_pixel_translation && l.screen_space_transform.len() == 16)
+                .then(|| (l.screen_space_transform[12] as i32, l.screen_space_transform[13] as i32)),
+        })
+        .collect();
+    let nodes = tree.scroll_tree;
+    let size = |s: SizeJson| (s.width.max(0.0).round() as u32, s.height.max(0.0).round() as u32);
+    let nodes = nodes
+        .into_iter()
+        .map(|n| {
+            Some(pixel_core::surfaces::ScrollNode {
+                element_id: n.element_id as u64,
+                id: n.id,
+                parent_id: n.parent_id,
+                transform_id: n.transform_id,
+                container_scroll_node_id: n.container_scroll_node_id,
+                container_origin: (n.container_origin.x.round() as i32, n.container_origin.y.round() as i32),
+                container_bounds: size(n.container_bounds),
+                bounds: size(n.bounds),
+                scroll_offset: (n.scroll_offset.x as f32, n.scroll_offset.y as f32),
+                user_scrollable_horizontal: n.user_scrollable_horizontal,
+                user_scrollable_vertical: n.user_scrollable_vertical,
+                is_composited: n.is_composited,
+                scrolls_inner_viewport: n.scrolls_inner_viewport,
+                scrolls_outer_viewport: n.scrolls_outer_viewport,
+                to_screen: matrix(&n.to_screen)?,
+                container_to_screen: matrix(&n.container_to_screen)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(std::sync::Arc::new(pixel_core::surfaces::ScrollTree { nodes, drawn_layers }))
+}
+
 fn ingest_frame(engine: &mut Engine, frame: &surface::SurfaceFrame) -> std::result::Result<u32, String> {
     match &frame.pixels {
         #[cfg(target_os = "macos")]
@@ -200,7 +303,7 @@ fn ingest_pixels(
     stride: usize,
 ) -> std::result::Result<u32, String> {
     engine
-        .ingest_surface(frame.id, width, height, pixels, stride, frame.damage.as_deref())
+        .ingest_surface(frame.id, width, height, pixels, stride, frame.damage.as_deref(), frame.scroll_tree.clone())
         .map(|_| height)
         .map_err(|error| error.to_string())
 }
@@ -211,6 +314,15 @@ pub struct HostOptions {
     pub pane: String,
     pub name: String,
     pub tty: Option<String>,
+}
+
+#[napi(object)]
+pub struct StreamOptions {
+    pub socket: String,
+    pub cols: u32,
+    pub rows: u32,
+    pub width_px: Option<u32>,
+    pub height_px: Option<u32>,
 }
 
 #[napi(object)]
@@ -241,31 +353,17 @@ impl DamageRect {
     }
 }
 
-static UI_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/InterVariable.ttf");
-static MONO_FONT_BYTES: &[u8] =
-    include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
-
-const SYSTEM_UI_FONTS: &[&str] = &[
-    "/System/Library/Fonts/SFNSRounded.ttf",
-    "/System/Library/Fonts/SFNS.ttf",
-];
-
-fn load_font(candidates: &[&str], fallback: &'static [u8]) -> fontdue::Font {
-    let parse = |bytes: &[u8]| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default());
-    if cfg!(target_os = "macos") {
-        for path in candidates {
-            if let Ok(bytes) = std::fs::read(path)
-                && let Ok(font) = parse(&bytes)
-            {
-                return font;
-            }
-        }
-    }
-    parse(fallback).expect("bundled font parses")
-}
+const IDLE_AFTER_INPUT: std::time::Duration = std::time::Duration::from_millis(300);
+const IDLE_RECHECK: std::time::Duration = std::time::Duration::from_millis(4);
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::from_reason(e.to_string())
+}
+
+fn note(engine: &mut Engine, text: String) {
+    if let Some(terminal) = terminal(engine) {
+        terminal.note(text);
+    }
 }
 
 struct SendEngine(Engine);
@@ -273,29 +371,36 @@ struct SendEngine(Engine);
 #[allow(unsafe_code)]
 unsafe impl Send for SendEngine {}
 
-pub(crate) fn engine_info(engine: &Engine) -> serde_json::Value {
-    let (width, height) = engine.comp.window;
-    let (cell_w, cell_h) = engine.cell;
-    json!({
-        "width": width,
-        "height": height,
-        "cellWidth": cell_w,
-        "cellHeight": cell_h,
-        "basePx": engine.base_px,
-        "kittyKeyboard": engine.term.kitty_keyboard(),
-        "hosted": engine.term.is_hosted(),
-        "colors": colors_json(&engine.colors),
-    })
+pub(crate) fn terminal(engine: &mut Engine) -> Option<&mut TerminalBackend> {
+    engine.backend.downcast_mut::<TerminalBackend>()
 }
 
-pub(crate) fn colors_json(colors: &TerminalColors) -> serde_json::Value {
-    json!({
-        "foreground": colors.foreground,
-        "background": colors.background,
-        "palette": colors.palette,
-    })
+type BackendFactory = fn(&serde_json::Value) -> std::io::Result<Box<dyn Backend>>;
+
+static BACKENDS: std::sync::Mutex<Vec<(String, BackendFactory)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn register_backend(name: &str, factory: BackendFactory) {
+    let mut backends = BACKENDS.lock().unwrap_or_else(|e| e.into_inner());
+    backends.retain(|(existing, _)| existing != name);
+    backends.push((name.to_string(), factory));
 }
 
+fn create_backend(name: &str, options: &serde_json::Value) -> Result<Box<dyn Backend>> {
+    let factory = BACKENDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(existing, _)| existing == name)
+        .map(|(_, factory)| *factory)
+        .ok_or_else(|| Error::from_reason(format!("no pixel backend named {name} is registered")))?;
+    factory(options).map_err(err)
+}
+
+
+#[napi]
+pub fn prepare_fonts() {
+    pixel_bridge::prepare_default_fonts();
+}
 
 #[napi]
 pub struct PixelEngine {
@@ -305,6 +410,7 @@ pub struct PixelEngine {
     rx: Option<Receiver<String>>,
     waker: Waker,
     surfaces: Arc<SurfaceMailbox>,
+    presented: Arc<std::sync::atomic::AtomicU64>,
     captures: capture::Registry,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -318,35 +424,60 @@ impl PixelEngine {
         wrapper: Option<String>,
         session_env: Option<std::collections::HashMap<String, String>>,
         host: Option<HostOptions>,
+        stream: Option<StreamOptions>,
     ) -> Result<Self> {
-        // index 0 is what text renders in unless a node picks another font, so it is
-        // the bundled mono face regardless of what the OS ships
-        let fonts = vec![
-            load_font(&[], MONO_FONT_BYTES),
-            load_font(SYSTEM_UI_FONTS, UI_FONT_BYTES),
-        ];
         let session_env = match session_env {
-            Some(env) => pixel_core::SessionEnv::of_session(env),
-            None => pixel_core::SessionEnv::of_process(),
+            Some(env) => pixel_terminal::SessionEnv::of_session(env),
+            None => pixel_terminal::SessionEnv::of_process(),
         };
-        let mut engine = Engine::new(EngineConfig {
-            fonts,
-            cell_metrics_font: 0,
-            watch_resize: false,
+        let renderer = pixel_terminal::Renderer::named(session_env.var("PIXEL_RENDERER").as_deref());
+        let backend = TerminalBackend::new(pixel_terminal::TerminalOptions {
             tty,
-            host: host.map(|host| pixel_core::HostConfig {
+            host: host.map(|host| pixel_terminal::HostOptions {
                 socket: host.socket,
                 pane: host.pane,
                 name: host.name,
                 tty: host.tty,
             }),
-            wrapper: pixel_core::wrapper::Wrapper::named(wrapper.as_deref()),
+            stream: stream.map(|stream| pixel_terminal::StreamOptions {
+                socket: stream.socket,
+                size: pixel_terminal::WindowSize {
+                    cols: stream.cols,
+                    rows: stream.rows,
+                    width_px: stream.width_px.unwrap_or(0),
+                    height_px: stream.height_px.unwrap_or(0),
+                },
+            }),
+            wrapper: pixel_terminal::Wrapper::named(wrapper.as_deref()),
             session_env,
+            watch_resize: false,
+            renderer,
         })
         .map_err(err)?;
-        let waker = engine.term.waker().map_err(err)?;
+        Self::start_with(Box::new(backend))
+    }
+
+    #[napi(factory)]
+    pub fn with_backend(name: String, options: Option<String>) -> Result<Self> {
+        let options = match options {
+            Some(json) => serde_json::from_str(&json).map_err(err)?,
+            None => serde_json::Value::Null,
+        };
+        Self::start_with(create_backend(&name, &options)?)
+    }
+
+    fn start_with(backend: Box<dyn Backend>) -> Result<Self> {
+        pixel_bridge::highlight::prepare();
+        let mut engine = Engine::new(EngineConfig {
+            fonts: pixel_bridge::default_fonts(),
+            cell_metrics_font: 0,
+            backend,
+        })
+        .map_err(err)?;
+        let waker = engine.backend.waker().map_err(err)?;
         engine.cpu_throttle.register_current_thread();
         let info = engine_info(&engine).to_string();
+        let presented = engine.presented.clone();
         let (tx, rx) = channel();
         Ok(Self {
             engine: Some(engine),
@@ -356,6 +487,7 @@ impl PixelEngine {
             waker,
             // who even uses you tho
             surfaces: Arc::new(SurfaceMailbox::default()),
+            presented,
             captures: capture::Registry::default(),
             stop: Arc::new(AtomicBool::new(false)),
             thread: None,
@@ -408,6 +540,7 @@ impl PixelEngine {
                 height,
             },
             damage,
+            None,
         );
         self.waker.wake();
         Ok(())
@@ -417,6 +550,11 @@ impl PixelEngine {
     pub fn remove_surface(&self, id: u32) {
         self.surfaces.remove(id);
         self.waker.wake();
+    }
+
+    #[napi]
+    pub fn frames_presented(&self) -> f64 {
+        self.presented.load(Ordering::Relaxed) as f64
     }
 
     #[napi]
@@ -497,7 +635,10 @@ impl PixelEngine {
             .engine
             .as_mut()
             .ok_or_else(|| Error::from_reason("key reporting must be configured before start"))?;
-        engine.term.set_key_event_types(enabled).map_err(err)
+        match terminal(engine) {
+            Some(terminal) => terminal.set_key_event_types(enabled).map_err(err),
+            None => Ok(()),
+        }
     }
 
     #[napi]
@@ -526,18 +667,46 @@ impl PixelEngine {
                 .collect();
             let mut autoprofile = Autoprofile::from_env(&mut engine);
             let (mut seen_carried, mut seen_lost) = (0u64, 0u64);
+            let mut layout_queries = Vec::new();
+            let mut idle_requests = Vec::new();
+            let mut applying = std::time::Duration::ZERO;
             // event loop
             let exit_error = loop {
-                let events = match engine.pump(None) {
+                let input_settling = IDLE_AFTER_INPUT.saturating_sub(engine.since_input());
+                let wait = if !layout_queries.is_empty() {
+                    Some(std::time::Duration::ZERO)
+                } else if !idle_requests.is_empty() && !engine.idle() {
+                    Some(IDLE_RECHECK)
+                } else if !idle_requests.is_empty() {
+                    Some(input_settling)
+                } else {
+                    None
+                };
+                let events = match engine.pump(wait) {
                     Ok(events) => events,
                     Err(e) => break Some(e.to_string()),
                 };
+                for query in layout_queries.drain(..) {
+                    let reply = pixel_bridge::answer_layout_query(&mut engine, &ids, query);
+                    dispatch_to_node.call(Ok(reply), ThreadsafeFunctionCallMode::NonBlocking);
+                }
+                if !idle_requests.is_empty() && engine.idle() && engine.since_input() >= IDLE_AFTER_INPUT {
+                    for request in idle_requests.drain(..) {
+                        let reply = json!({ "type": "idle", "request": request, "applyMs": applying.as_secs_f64() * 1000.0 });
+                        dispatch_to_node.call(Ok(reply.to_string()), ThreadsafeFunctionCallMode::NonBlocking);
+                    }
+                    applying = std::time::Duration::ZERO;
+                }
                 autoprofile.tick(&mut engine);
                 if stop.load(Ordering::Relaxed) {
                     break None;
                 }
                 while let Ok(cmd) = rx.try_recv() {
-                    let outcome = apply_ops(&mut engine, &mut ids, &cmd);
+                    let started = std::time::Instant::now();
+                    let mut outcome = apply_ops(&mut engine, &mut ids, &cmd, &mut terminal_ops::TerminalOps);
+                    applying += started.elapsed();
+                    layout_queries.append(&mut outcome.layout_queries);
+                    idle_requests.append(&mut outcome.idle_requests);
                     if let Some(message) = outcome.error {
                         pixel_core::logging::error("bridge", message.clone());
                         let error = json!({ "type": "error", "message": message });
@@ -557,14 +726,14 @@ impl PixelEngine {
                 }
                 let (carried, lost) = surfaces.dropped();
                 if carried > seen_carried {
-                    engine.note(format!(
+                    note(&mut engine, format!(
                         "mailbox: {} browser frames dropped, damage carried",
                         carried - seen_carried
                     ));
                     seen_carried = carried;
                 }
                 if lost > seen_lost {
-                    engine.note(format!(
+                    note(&mut engine, format!(
                         "mailbox: {} browser frames dropped, damage lost",
                         lost - seen_lost
                     ));
@@ -635,6 +804,7 @@ impl PixelEngine {
         damage_y: u32,
         damage_width: u32,
         damage_height: u32,
+        scroll_tree_json: Option<String>,
     ) -> Result<()> {
         let surface = iosurface::RetainedSurface::retain(handle as u64 as usize).map_err(Error::from_reason)?;
         let damage = (damage_width > 0 && damage_height > 0).then_some(pixel_core::surfaces::Rect {
@@ -655,7 +825,7 @@ impl PixelEngine {
             );
         }
         self.surfaces
-            .submit(id, SurfacePixels::IoSurface(surface), damage);
+            .submit(id, SurfacePixels::IoSurface(surface), damage, scroll_tree(scroll_tree_json));
         self.waker.wake();
         Ok(())
     }
@@ -670,6 +840,7 @@ impl PixelEngine {
         shm: SurfaceShm,
         damage: Option<DamageRect>,
         released: Option<ThreadsafeFunction<u32>>,
+        scroll_tree_json: Option<String>,
     ) -> Result<()> {
         let release_hook = released.map(|tsfn| {
             Box::new(move || {
@@ -702,7 +873,7 @@ impl PixelEngine {
             );
         }
         self.surfaces
-            .submit(id, SurfacePixels::Shm(surface), damage);
+            .submit(id, SurfacePixels::Shm(surface), damage, scroll_tree(scroll_tree_json));
         self.waker.wake();
         Ok(())
     }

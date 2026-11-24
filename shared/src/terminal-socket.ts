@@ -32,7 +32,7 @@ const replySchema = z.object({
   error: z.object({ message: z.string() }).optional(),
 });
 
-const OPERATIONS = ["getCurrentPane", "split", "listPanes", "neighbor", "sendText", "focusPane"] as const;
+const OPERATIONS = ["getCurrentPane", "split", "listPanes", "neighbor", "sendText", "pasteKey", "focusPane"] as const;
 
 const RESULTS = {
   hello: z.object({ name: z.string(), methods: z.array(z.string()) }),
@@ -41,6 +41,7 @@ const RESULTS = {
   listPanes: z.object({ panes: z.array(paneDetailsSchema) }),
   neighbor: z.object({ pane: paneSchema.nullable() }),
   sendText: z.object({}),
+  pasteKey: z.object({}),
   focusPane: z.object({}),
 };
 
@@ -126,6 +127,9 @@ export function socketTerminal(socketPath: string): Terminal {
     },
     async sendText(pane: string, text: string): Promise<void> {
       await call(socketPath, "sendText", { pane, text });
+    },
+    async pasteKey(pane: string): Promise<void> {
+      await call(socketPath, "pasteKey", { pane });
     },
     async focusPane(pane: string): Promise<void> {
       await call(socketPath, "focusPane", { pane });

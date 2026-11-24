@@ -2,7 +2,7 @@ use std::io;
 
 use super::{ChangeSource, Engine, EngineEvent, MarkRef};
 use crate::logging;
-use crate::terminal::Mouse;
+use crate::input::Mouse;
 use crate::text_input::{InputAction, InputReply};
 use crate::tree::{NodeId, PxRect};
 
@@ -121,7 +121,7 @@ impl Engine {
                 self.push_change(view, id, source, out);
             }
             InputReply::RequestPaste => {
-                self.clipboard.request_paste(view, id);
+                self.clipboard.request_paste(self.backend.as_ref(), view, id);
             }
         }
         Ok(())
@@ -254,7 +254,7 @@ impl Engine {
     }
 
     fn caret_state(&mut self, view: usize, id: NodeId) -> Option<(usize, PxRect)> {
-        let fonts = &self.fonts;
+        let fonts = &mut self.fonts;
         let base_px = self.base_px;
         self.comp.views[view].tree.flush_layout(fonts, base_px);
         let tree = &self.comp.views[view].tree;
@@ -271,7 +271,7 @@ impl Engine {
         let Some((view, focus)) = self.focused() else {
             return;
         };
-        let fonts = &self.fonts;
+        let fonts = &mut self.fonts;
         let base_px = self.base_px;
         self.comp.views[view].tree.flush_layout(fonts, base_px);
         self.reveal_caret_x(view, focus);
@@ -300,9 +300,11 @@ impl Engine {
         let current = input.scroll_x();
         let widest = crate::wrap::wrap_lines(text, font, px, None, marks)
             .into_iter()
-            .map(|line| crate::canvas::measure_marked(font, text, line, px, marks))
+            .map(|line| crate::text_metrics::measure_marked(font, text, line, px, marks))
             .fold(0.0f32, f32::max);
-        let max_scroll = (widest + crate::text_input::caret_width(px) - width).max(0.0);
+        let caret_w =
+            crate::text_input::caret_width(geometry.caret, text, input.cursor(), font, px, marks);
+        let max_scroll = (widest + caret_w - width).max(0.0);
         let full_selection = input
             .selection()
             .is_some_and(|range| range.start == 0 && range.end == text.len());
@@ -317,7 +319,6 @@ impl Engine {
                 None,
                 marks,
             );
-            let caret_w = crate::text_input::caret_width(px);
             let mut next = current;
             if caret_x + caret_w - next > width {
                 next = caret_x + caret_w - width;
@@ -363,6 +364,7 @@ impl Engine {
         if let Some(target) = area.target_to_reveal(caret, current, margin)
             && let Some(state) = self.comp.views[view].tree.scroll_state_mut(scroller)
         {
+            state.reveal = false;
             state.set_target(target);
         }
     }

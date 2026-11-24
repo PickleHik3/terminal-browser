@@ -1,6 +1,6 @@
 import { createContext, useSyncExternalStore } from "react";
 
-import type { EngineKeyEvent, LayoutSnapshot, PastedImage, PixelRoot, TerminalColors } from "./react";
+import type { EngineKeyEvent, LayoutSnapshot, PastedImage, PixelRoot, PointerShape, TerminalColors } from "./react";
 import { createStore } from "./react/devtools/store";
 import type { Store } from "./react/devtools/store";
 import type { PageHost } from "./web/host";
@@ -13,6 +13,7 @@ export interface ViewEntry {
   devtoolsEnabled: boolean;
   externalDevtools: boolean;
   externalDevtoolsAction: ((action: "close" | "dock-bottom" | "dock-right") => void) | null;
+  externalDevtoolsCursor: ((shape: PointerShape) => void) | null;
   toggleDevtools(): void;
   handleKey(event: EngineKeyEvent): boolean;
   // Views without a PageHost (a guest app's pixels) take these directly.
@@ -28,6 +29,7 @@ export class ViewRegistry {
   readonly views = new Set<ViewEntry>();
   focused: ViewEntry | null = null;
   readonly resizeListeners = new Set<() => void>();
+  readonly rectWatchers = new Set<() => number | undefined>();
 
   readonly layout: Store<LayoutSnapshot> = createStore<LayoutSnapshot>({
     rects: new Map(),
@@ -37,7 +39,6 @@ export class ViewRegistry {
     at: 0,
   });
   readonly colors: Store<TerminalColors>;
-  private sentCursor: string | null = null;
 
   constructor(
     readonly root: PixelRoot,
@@ -89,14 +90,17 @@ export class ViewRegistry {
     this.hooks.quit(entry);
   }
 
-  setPointerShape(shape: string) {
-    if (shape === this.sentCursor) return;
-    this.sentCursor = shape;
-    this.root.setPointerShape(shape);
+  watchedRects(): number[] {
+    const ids: number[] = [];
+    for (const watcher of this.rectWatchers) {
+      const id = watcher();
+      if (id != null) ids.push(id);
+    }
+    return ids;
   }
 
   queryLayout() {
-    this.root.queryLayout();
+    this.root.queryLayout(this.watchedRects());
   }
 
   background(): string {

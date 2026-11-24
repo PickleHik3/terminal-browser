@@ -1,13 +1,20 @@
 /// <reference path="../electron/electron.d.ts" preserve="true" />
 export { createRoot } from "./root";
+export type { ProxySetting } from "./web/browser-session";
 export type { LoadOptions, Root, RootOptions } from "./root";
+export type { RelaunchRequest } from "./relaunch";
 export type { Instance } from "./instances";
 export { findOwner, listInstances } from "./instances";
 export { WebView } from "./webview";
+export { initialWebViewState } from "./web/types";
 export type {
   DownloadProgress,
   OpenWindowDecision,
   OpenWindowPolicy,
+  PermissionCheck,
+  PermissionCheckAnswer,
+  PermissionRequest,
+  MediaCapture,
   BrowserWindowOptions,
   WebViewHandle,
   WebViewProps,
@@ -24,6 +31,7 @@ export type { TerminalTheme } from "./web/session";
 export { QUIT_URL, defaultOpenWindow } from "./web/host";
 export { setDeviceEmulation } from "./web/browser-session";
 export type { DeviceEmulation } from "./web/browser-session";
+export { clearFavicons } from "./web/favicon";
 
 export {
   Box,
@@ -33,14 +41,16 @@ export {
   MarkedText,
   Path,
   Markdown,
+  Link,
   appLog,
   useTerminalColors,
   setClipboard,
-  setPointerShape,
   requestClipboardImage,
+  requestIdle,
   highlight,
   diff,
   parseMarkdown,
+  prepareFonts,
   HIGHLIGHT_CAPTURES,
   Surface,
   SurfaceCapture,
@@ -49,7 +59,9 @@ export {
   engineLogs,
   useStore,
 } from "./react";
-export type { LogRow, LogBuffer } from "./react";
+export type { LogRow, LogBuffer, Idle } from "./react";
+export type { TerminalStream } from "./react/native";
+export { STREAM_ENV, STREAM_SIZE_ENV, TERMINAL_ENV, streamFromEnv, streamed, terminalFromEnv } from "./terminal/stream";
 export type {
   BoxProps,
   TextProps,
@@ -74,6 +86,7 @@ export type {
   PastedImage,
   PasteSource,
   CaretInfo,
+  CaretShape,
   ChangeInfo,
   ChangeSource,
   ContainerSelection,
@@ -83,8 +96,12 @@ export type {
   Edges,
   InsetEdges,
   InsetValue,
+  PointerShape,
   ScrollbarStyle,
   Style,
+  FontFace,
+  FontFamily,
+  DeviceInfo,
   EngineInfo,
   EngineKeyEvent,
   KeyMods,
@@ -97,6 +114,7 @@ export type {
   CaptureIndex,
   MarkdownProps,
   MarkdownTheme,
+  LinkProps,
   MarkdownBlock,
   HighlightSpan,
   DiffRow,

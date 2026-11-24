@@ -1,16 +1,16 @@
-mod canvas;
+pub mod backend;
+pub mod device;
+pub mod text_metrics;
 pub mod clipboard_image;
 mod desc;
 mod engine;
-mod herdr;
-mod hosted;
-mod image_cache;
-mod kitty;
+pub mod fonts;
+pub mod image_cache;
+mod input;
 pub mod logging;
 mod menu;
-mod native;
-mod paint;
-pub(crate) mod parallel;
+pub mod scene;
+pub mod parallel;
 pub mod profiler;
 mod shape;
 mod scroll;
@@ -18,48 +18,46 @@ mod scrollbar;
 mod selection;
 mod style;
 pub mod surfaces;
-mod terminal;
+pub mod system_fonts;
 mod text_input;
-mod throttle;
-pub mod wrapper;
+pub(crate) mod throttle;
 mod tree;
 mod wrap;
 
-pub use canvas::{Canvas, measure_text};
+pub use text_metrics::{FontMetrics, TextMetrics, measure_text};
+pub use device::{ColorDepth, Device, Pointer};
 pub use desc::Desc;
 pub use engine::{
     ChangeSource, DragPhase, Engine, EngineConfig, EngineEvent, FrameStats, HighlightArea,
-    HostConfig, MarkRef, TouchPoint, px_for_cell_height,
+    MarkRef, TouchPoint, px_for_cell_height,
 };
-pub use kitty::kitty_transmit;
 pub use logging::{LogEntry, LogLevel};
 pub use menu::{CONTEXT_MENU_KEY, MenuEntry, MenuItem, MenuStyle, context_menu};
-pub use native::{NativeEvent, NativeScroll};
-pub use terminal::{Retarget, SessionEnv};
-pub use paint::paint;
+mod record;
+pub use record::record_scene;
+pub use image_cache::scaled_rgba;
+pub use shape::rounded_rect_path;
 pub use profiler::{CounterRecord, ProfileData, SpanRecord};
 pub use shape::{LineCap, LineJoin, PathCmd, ShapeProps, ShapeStroke, build_path, parse_path_data, skia_stroke};
-pub use scroll::profiles::{Glide, Smooth};
+pub use scroll::profiles::{Glide, Smooth, Step};
 pub use scroll::{ScrollProfile, ScrollState};
 pub use scrollbar::ScrollbarRects;
 pub use selection::{DocPos, DocSelection};
 pub use style::{
     Align, Border, BorderSide, Color, Dimension, Edges, FlexDirection, Inset, InsetValue, Justify,
-    LinearGradient, Overflow, Paint, Position, ScrollbarStyle, SelectionMode, Style,
+    Layout, LinearGradient, Overflow, Paint, Position, ScrollAnchor, ScrollbarStyle, SelectionMode, Style,
 };
-pub use terminal::{
-    Event, Key, KeyEvent, KeyKind, Mods, Mouse, MouseButton, MouseKind, Terminal, TerminalColors,
-    Touch, TouchKind, Waker, WindowSize,
-};
+pub use backend::{Backend, Event, HostColors, Metrics, Waker};
+pub use input::{Key, KeyEvent, KeyKind, Mods, Mouse, MouseButton, MouseKind, TOUCH_TIME_MASK, Touch, TouchKind};
 pub use text_input::{
-    Granularity, InputAction, InputGeometry, InputReply, MARK_CHAR, Mark, TextInput, line_height,
-    offset_to_point, point_to_offset,
+    caret_thickness, mark_advance_at, CaretShape, Granularity, InputAction, InputGeometry, InputReply, MARK_CHAR, Mark, TextInput,
+    line_height, offset_to_point, point_to_offset,
 };
 pub use throttle::CpuThrottle;
 pub use tree::{
-    BoxMetrics, Gutter, HitTarget, ImageProps, InputProps, NodeId, Props, PxRect, ScrollArea,
-    SlotKind, TextSpan, Tree,
+    Placement, BoxMetrics, Gutter, HitTarget, ImageProps, InputProps, NodeId, Props, PxRect, ScrollArea,
+    SlotKind, TextLayout, TextLeaf, TextLine, TextLink, TextSpan, Tree,
 };
-pub use wrap::{line_of_offset, wrap_lines};
+pub use wrap::{WRAP_SLACK, line_of_offset, wrap_lines};
 
 pub use fontdue;

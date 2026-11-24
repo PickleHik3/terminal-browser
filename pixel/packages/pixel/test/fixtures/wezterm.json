@@ -30,6 +30,11 @@
       "commands": [
         "wezterm cli split-pane --right -- terminal-browser open"
       ]
+    },
+    "pasteKey": {
+      "commands": [
+        "wezterm cli send-text --no-paste --pane-id 7"
+      ]
     }
   }
 }

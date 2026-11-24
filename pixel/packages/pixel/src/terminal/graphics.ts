@@ -6,6 +6,8 @@ export type GraphicsSupport = "supported" | "unsupported" | "unknown";
 
 export const SKIP_ENV = "PIXEL_SKIP_GRAPHICS_CHECK";
 
+export const RENDERER_ENV = "PIXEL_RENDERER";
+
 const PROBE_ID = 4207;
 
 const PROBE_TIMEOUT_MS = 500;
@@ -22,10 +24,19 @@ function probeSequence(wrap: boolean): string {
 function graphicsReply(buffer: string): boolean | null {
   const needle = `Gi=${PROBE_ID};`;
   const at = buffer.indexOf(needle);
-  if (at < 0) return null;
+  if (at < 0) return /\x1b\[\?[\d;]*c/.test(buffer) ? false : null;
   const rest = buffer.slice(at + needle.length);
   if (rest.length < 2) return null;
   return rest.startsWith("OK");
+}
+
+const SAVE_CURSOR = "\x1b7";
+
+// Terminals without graphics support may print the probe's payload as plain text.
+function eraseEchoedProbe() {
+  try {
+    fs.writeSync(1, "\x1b8\x1b[J");
+  } catch { }
 }
 
 export function probeGraphics(terminal: Terminal | null): Promise<GraphicsSupport> {
@@ -50,6 +61,7 @@ export function probeGraphics(terminal: Terminal | null): Promise<GraphicsSuppor
         if (!wasRaw) stdin.setRawMode?.(false);
       } catch { }
       if (!stdin.isPaused()) stdin.pause();
+      if (graphics !== "supported") eraseEchoedProbe();
       resolve(graphics);
     };
 
@@ -71,7 +83,7 @@ export function probeGraphics(terminal: Terminal | null): Promise<GraphicsSuppor
     timer = setTimeout(() => finish("unknown"), PROBE_TIMEOUT_MS);
 
     try {
-      fs.writeSync(1, probeSequence(terminal?.wrapper === "tmux"));
+      fs.writeSync(1, `${SAVE_CURSOR}${probeSequence(terminal?.wrapper === "tmux")}`);
     } catch {
       finish("unknown");
     }
@@ -121,18 +133,4 @@ export function panePixels(): Promise<{ width: number; height: number } | null> 
       finish(null);
     }
   });
-}
-
-export function unsupportedGraphicsMessage(color = false): string {
-  const sgr = (code: string, text: string) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
-  return [
-    "",
-    `  ${sgr("1", "Unsupported terminal: this terminal cannot display graphics")}`,
-    "",
-    `  ${sgr("2", "We recommend Ghostty:")}`,
-    `  ${sgr("4", "https://ghostty.org/download")}`,
-    "",
-    `  ${sgr("2", "Note: any terminal that supports the kitty graphics protocol is supported")}`,
-    "",
-  ].join("\n");
 }

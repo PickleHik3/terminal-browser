@@ -89,6 +89,9 @@ export const tmux: Detect = (env, run) => {
       await run("tmux", ["load-buffer", "-b", "pixel-send", "-"], text);
       await tmux(["paste-buffer", "-p", "-d", "-b", "pixel-send", "-t", pane]);
     },
+    async pasteKey(pane) {
+      await tmux(["send-keys", "-t", pane, "C-v"]);
+    },
     async focusPane(pane) {
       const client = await userClient();
       if (client) {

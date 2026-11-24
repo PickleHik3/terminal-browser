@@ -8,7 +8,7 @@ import {
   isInputMessage,
   isLaunchReport,
   isSizeMessage,
-  takenTexts,
+  takenItems,
   type BridgeState,
   type Frame,
 } from './bridge-protocol.ts'
@@ -231,9 +231,10 @@ async function browserClosed($: EngineInterface): Promise<void> {
 }
 
 async function deliverAgentText($: EngineInterface): Promise<void> {
-  const lines = takenTexts(await post($, '/inbox/take', {}))
-    .filter(text => text.trim() !== '')
-    .map(text => `> ${text.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim()}`)
+  const oneLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim()
+  const lines = takenItems(await post($, '/inbox/take', {}))
+    .filter(item => item.text.trim() !== '')
+    .flatMap(item => [oneLine(item.text), ...(item.screenshot ? [oneLine(item.screenshot)] : [])])
   if (lines.length === 0) return
   const { isFilled } = await $.prompt.fill({ text: `${lines.join('\n')}\n` })
   if (!isFilled) {

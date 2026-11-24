@@ -80,6 +80,21 @@ pub enum Position {
     #[default]
     Flow,
     Absolute,
+    Sticky,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    #[default]
+    Flex,
+    List,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollAnchor {
+    #[default]
+    Auto,
+    End,
 }
 
 /**
@@ -186,6 +201,7 @@ pub enum Paint {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
     pub flex_direction: FlexDirection,
+    pub flex_wrap: bool,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: Dimension,
@@ -200,6 +216,8 @@ pub struct Style {
     pub position: Position,
     pub inset: Inset,
     pub overflow: Overflow,
+    pub layout: Layout,
+    pub scroll_anchor: ScrollAnchor,
     pub justify_content: Option<Justify>,
     pub align_items: Option<Align>,
     pub background: Option<Paint>,
@@ -207,7 +225,9 @@ pub struct Style {
     pub border: Option<Border>,
     pub color: Option<Color>,
     pub font_size: Option<f32>,
-    pub font: Option<usize>,
+    pub font_family: Option<usize>,
+    pub font_weight: Option<u16>,
+    pub font_italic: Option<bool>,
     pub hover_background: Option<Color>, // seems weird but is not that bad of a representation
     pub hover_color: Option<Color>,
     pub scrollbar: Option<ScrollbarStyle>,
@@ -217,12 +237,14 @@ pub struct Style {
     pub opaque: bool,
     pub selection_color: Option<Color>,
     pub selection_mode: SelectionMode,
+    pub pointer_shape: Option<String>,
 }
 
 impl Default for Style {
     fn default() -> Self {
         Self {
             flex_direction: FlexDirection::default(),
+            flex_wrap: false,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: Dimension::default(),
@@ -237,6 +259,8 @@ impl Default for Style {
             position: Position::default(),
             inset: Inset::default(),
             overflow: Overflow::default(),
+            layout: Layout::default(),
+            scroll_anchor: ScrollAnchor::default(),
             justify_content: None,
             align_items: None,
             background: None,
@@ -244,7 +268,9 @@ impl Default for Style {
             border: None,
             color: None,
             font_size: None,
-            font: None,
+            font_family: None,
+            font_weight: None,
+            font_italic: None,
             hover_background: None,
             hover_color: None,
             scrollbar: None,
@@ -254,6 +280,7 @@ impl Default for Style {
             selectable: None,
             selection_color: None,
             selection_mode: SelectionMode::default(),
+            pointer_shape: None,
         }
     }
 }

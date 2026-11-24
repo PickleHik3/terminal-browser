@@ -27,6 +27,11 @@
         "herdr pane swap --pane w1:p2 --direction left",
         "herdr pane run w1:p2 terminal-browser open"
       ]
+    },
+    "pasteKey": {
+      "commands": [
+        "herdr pane send-text w1:p1 \u0016"
+      ]
     }
   }
 }

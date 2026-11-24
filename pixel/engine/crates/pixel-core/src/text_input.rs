@@ -2,12 +2,12 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::Instant;
 
-use crate::canvas::{char_advance, measure_marked};
+use crate::text_metrics::{char_advance, measure_marked};
 use crate::selection::{
     ClickGesture, ClickTracker, line_end, line_range_at, line_start, next_char, next_word_boundary,
     prev_char, prev_word_boundary, snap_to_boundary, word_range_at,
 };
-use crate::terminal::{Key, KeyEvent, Mouse, MouseButton, MouseKind};
+use crate::input::{Key, KeyEvent, Mouse, MouseButton, MouseKind};
 use crate::tree::PxRect;
 use crate::wrap::{line_of_offset, wrap_lines};
 
@@ -39,11 +39,20 @@ pub enum InputReply {
     RequestPaste,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaretShape {
+    #[default]
+    Bar,
+    Block,
+    Underscore,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct InputGeometry {
     pub origin: (f32, f32),
     pub font: usize,
     pub px: f32,
+    pub caret: CaretShape,
     pub max_width: Option<f32>,
 }
 
@@ -53,7 +62,7 @@ impl InputGeometry {
         text: &str,
         marks: &[Mark],
         point: (f32, f32),
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> usize {
         let font = &fonts[self.font.min(fonts.len() - 1)];
         point_to_offset(
@@ -72,21 +81,69 @@ impl InputGeometry {
         text: &str,
         marks: &[Mark],
         cursor: usize,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> PxRect {
         let font = &fonts[self.font.min(fonts.len() - 1)];
-        let (x, y) = offset_to_point(text, cursor, font, self.px, self.max_width, marks);
+        let (x, y) = caret_point(self.caret, text, cursor, font, self.px, self.max_width, marks);
         PxRect {
             x: self.origin.0 + x,
             y: self.origin.1 + y,
-            w: caret_width(self.px),
+            w: caret_width(self.caret, text, cursor, font, self.px, marks),
             h: line_height(font, self.px),
         }
     }
 }
 
-pub(crate) fn caret_width(px: f32) -> f32 {
+pub fn caret_thickness(px: f32) -> f32 {
     (px / 8.0).max(2.0)
+}
+
+pub(crate) fn caret_width(
+    shape: CaretShape,
+    text: &str,
+    cursor: usize,
+    font: &crate::fonts::Font,
+    px: f32,
+    marks: &[Mark],
+) -> f32 {
+    if shape == CaretShape::Bar {
+        return caret_thickness(px);
+    }
+    match text[cursor..].chars().next().filter(|&ch| ch != '\n') {
+        Some(ch) => char_advance(font, ch, cursor, px, marks),
+        None => char_advance(font, ' ', cursor, px, &[]),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn caret_point(
+    shape: CaretShape,
+    text: &str,
+    cursor: usize,
+    font: &crate::fonts::Font,
+    px: f32,
+    wrap: Option<f32>,
+    marks: &[Mark],
+) -> (f32, f32) {
+    let (x, y) = offset_to_point(text, cursor, font, px, wrap, marks);
+    let width = caret_width(shape, text, cursor, font, px, marks);
+    match wrap {
+        Some(room) if shape != CaretShape::Bar && x + width > room => {
+            if cursor >= text.len() {
+                (0.0, y + line_height(font, px))
+            } else {
+                (x.min(room - width).max(0.0), y)
+            }
+        }
+        _ => (x, y),
+    }
+}
+
+pub(crate) fn caret_char(text: &str, cursor: usize) -> Option<char> {
+    text[cursor..]
+        .chars()
+        .next()
+        .filter(|&ch| ch != '\n' && ch != MARK_CHAR)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,7 +181,7 @@ pub(crate) fn claim_marks(text: &str, marks: &[(u64, usize)]) -> (String, Vec<Ma
     (out, kept)
 }
 
-pub(crate) fn mark_advance_at(marks: &[Mark], offset: usize) -> f32 {
+pub fn mark_advance_at(marks: &[Mark], offset: usize) -> f32 {
     marks
         .binary_search_by_key(&offset, |m| m.offset)
         .ok()
@@ -531,11 +588,11 @@ impl TextInput {
         self.place(target, extend);
     }
 
-    pub fn move_up(&mut self, extend: bool, font: &fontdue::Font, px: f32, wrap: Option<f32>) {
+    pub fn move_up(&mut self, extend: bool, font: &crate::fonts::Font, px: f32, wrap: Option<f32>) {
         self.move_vertical(true, extend, font, px, wrap);
     }
 
-    pub fn move_down(&mut self, extend: bool, font: &fontdue::Font, px: f32, wrap: Option<f32>) {
+    pub fn move_down(&mut self, extend: bool, font: &crate::fonts::Font, px: f32, wrap: Option<f32>) {
         self.move_vertical(false, extend, font, px, wrap);
     }
 
@@ -543,7 +600,7 @@ impl TextInput {
         &mut self,
         up: bool,
         extend: bool,
-        font: &fontdue::Font,
+        font: &crate::fonts::Font,
         px: f32,
         wrap: Option<f32>,
     ) {
@@ -694,7 +751,7 @@ impl TextInput {
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
-        font: &fontdue::Font,
+        font: &crate::fonts::Font,
         px: f32,
         wrap: Option<f32>,
     ) -> InputReply {
@@ -832,7 +889,7 @@ impl TextInput {
         &mut self,
         mouse: &Mouse,
         geometry: InputGeometry,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> InputReply {
         let point = (mouse.x as f32, mouse.y as f32);
         match (mouse.kind, mouse.button) {
@@ -862,7 +919,7 @@ impl TextInput {
     }
 }
 
-pub fn line_height(font: &fontdue::Font, px: f32) -> f32 {
+pub fn line_height(font: &crate::fonts::Font, px: f32) -> f32 {
     font.horizontal_line_metrics(px)
         .map_or(px, |m| m.new_line_size)
 }
@@ -870,7 +927,7 @@ pub fn line_height(font: &fontdue::Font, px: f32) -> f32 {
 pub fn offset_to_point(
     text: &str,
     offset: usize,
-    font: &fontdue::Font,
+    font: &crate::fonts::Font,
     px: f32,
     wrap: Option<f32>,
     marks: &[Mark],
@@ -889,7 +946,7 @@ pub fn point_to_offset(
     text: &str,
     x: f32,
     y: f32,
-    font: &fontdue::Font,
+    font: &crate::fonts::Font,
     px: f32,
     wrap: Option<f32>,
     marks: &[Mark],
@@ -903,7 +960,7 @@ fn nearest_column(
     text: &str,
     line: Range<usize>,
     x: f32,
-    font: &fontdue::Font,
+    font: &crate::fonts::Font,
     px: f32,
     marks: &[Mark],
 ) -> usize {
@@ -925,8 +982,8 @@ mod tests {
     static FONT_BYTES: &[u8] =
         include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
 
-    fn font() -> fontdue::Font {
-        fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default()).unwrap()
+    fn font() -> crate::fonts::Font {
+        crate::fonts::Font::single(fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default()).unwrap())
     }
 
     fn input(text: &str, cursor: usize) -> TextInput {
@@ -1317,13 +1374,13 @@ mod tests {
         );
     }
 
-    use crate::terminal::Mods;
+    use crate::input::Mods;
 
     fn key(k: Key, mods: Mods) -> KeyEvent {
         KeyEvent {
             key: k,
             mods,
-            kind: crate::terminal::KeyKind::Press,
+            kind: crate::input::KeyKind::Press,
             text: None,
         }
     }
@@ -1390,6 +1447,7 @@ mod tests {
             origin: (10.0, 5.0),
             font: 0,
             px: 16.0,
+            caret: CaretShape::Bar,
             max_width: None,
         };
         let text = "hello world";

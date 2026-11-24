@@ -37,6 +37,11 @@
         "cmux new-split right --surface 2f1a0c44-0000-4000-8000-000000000003 --focus true --json --id-format both",
         "cmux send --surface 2f1a0c44-0000-4000-8000-000000000009 -- terminal-browser open\\n"
       ]
+    },
+    "pasteKey": {
+      "commands": [
+        "cmux send --surface 2f1a0c44-0000-4000-8000-000000000003 -- \u0016"
+      ]
     }
   }
 }

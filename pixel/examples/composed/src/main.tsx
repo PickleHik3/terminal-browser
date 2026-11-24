@@ -103,24 +103,27 @@ function App() {
         <Button label="back" enabled={!!leftState?.canGoBack} rem={rem} theme={theme} onClick={() => left.current?.back()} />
         <Button label="fwd" enabled={!!leftState?.canGoForward} rem={rem} theme={theme} onClick={() => left.current?.forward()} />
         <Button label={leftState?.loading ? "stop" : "reload"} rem={rem} theme={theme} onClick={() => left.current?.reload()} />
-        <Input
+        <Box
           style={{
             flexGrow: 1,
             flexBasis: 0,
             height: rem * 1.5,
+            alignItems: "center",
             padding: { left: rem * 0.5, right: rem * 0.5 },
-            fontSize: rem * 0.8,
             background: theme.bg,
             cornerRadius: rem * 0.3,
             border: { width: 1, color: theme.fieldBorder },
-            color: theme.fg,
           }}
-          value={leftState?.url ?? ""}
-          onSubmit={(text) => {
-            const trimmed = text.trim();
-            if (trimmed) left.current?.loadURL(/^[a-z]+:/.test(trimmed) ? trimmed : `https://${trimmed}`);
-          }}
-        />
+        >
+          <Input
+            style={{ flexGrow: 1, flexBasis: 0, wrap: false, fontSize: rem * 0.8, color: theme.fg }}
+            value={leftState?.url ?? ""}
+            onSubmit={(text) => {
+              const trimmed = text.trim();
+              if (trimmed) left.current?.loadURL(/^[a-z]+:/.test(trimmed) ? trimmed : `https://${trimmed}`);
+            }}
+          />
+        </Box>
         <Button
           label={showDevtools ? "close devtools" : "devtools"}
           rem={rem}

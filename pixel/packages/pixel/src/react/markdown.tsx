@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import { Box, Image, Text, type NodeHandle } from "./components";
 import {
@@ -9,7 +9,7 @@ import {
   type MarkdownRow,
   type MarkdownSpan,
 } from "./native";
-import type { Color } from "./styles";
+import type { Color, FontFamily } from "./styles";
 import type { ClickEvent, TextSpan } from "./reconciler-config";
 
 export interface MarkdownTheme {
@@ -19,6 +19,7 @@ export interface MarkdownTheme {
   inlineCode: Color;
   codeBg: Color;
   separator: Color;
+  separatorWidth?: number;
   syntax: Record<string, Color | undefined>;
 }
 
@@ -27,11 +28,16 @@ export interface MarkdownProps {
   theme: MarkdownTheme;
   rem: number;
   streaming?: boolean;
-  monoFont?: number;
+  /** The family code blocks draw in. */
+  codeFamily?: FontFamily;
   onLinkClick?: (href: string) => void;
+  onCopyCode?: (code: string) => void;
   highlight?: { start: number; end: number } | null;
   highlightBg?: Color;
 }
+
+const CODE_COPY = { copy: "copy", copied: "copied" };
+const COPIED_MS = 1200;
 
 const HEADING_SCALE = [1.7, 1.4, 1.2, 1.05, 1, 1] as const;
 
@@ -40,6 +46,7 @@ type Anchors = MutableRefObject<Map<string, NodeHandle>>;
 interface Nav {
   anchors: Anchors;
   follow: (href: string) => void;
+  copy: (code: string) => void;
 }
 
 export function Markdown({
@@ -47,8 +54,9 @@ export function Markdown({
   theme,
   rem,
   streaming,
-  monoFont,
+  codeFamily,
   onLinkClick,
+  onCopyCode,
   highlight,
   highlightBg,
 }: MarkdownProps) {
@@ -58,6 +66,8 @@ export function Markdown({
   const anchors = useRef(new Map<string, NodeHandle>());
   const external = useRef(onLinkClick);
   external.current = onLinkClick;
+  const copyCode = useRef(onCopyCode);
+  copyCode.current = onCopyCode;
   const nav = useRef<Nav>({
     anchors,
     follow: (href) => {
@@ -67,6 +77,7 @@ export function Markdown({
         external.current?.(href);
       }
     },
+    copy: (code) => copyCode.current?.(code),
   });
   const highlighted = (block: MarkdownBlock) =>
     highlight != null && block.sourceEnd > highlight.start && block.sourceStart < highlight.end;
@@ -86,7 +97,8 @@ export function Markdown({
       nav: nav.current,
       theme,
       rem,
-      monoFont,
+      codeFamily,
+      copyable: onCopyCode != null,
       highlightBg: hit ? highlightBg ?? theme.codeBg : undefined,
       highlightRef: first ? firstHighlighted : undefined,
     };
@@ -159,7 +171,8 @@ interface BlockProps {
   block: MarkdownBlock;
   theme: MarkdownTheme;
   rem: number;
-  monoFont?: number;
+  codeFamily?: FontFamily;
+  copyable?: boolean;
   slug?: string;
   nav?: Nav;
   index?: number;
@@ -172,7 +185,8 @@ const Block = memo(
     block,
     theme,
     rem,
-    monoFont,
+    codeFamily,
+    copyable,
     slug,
     nav,
     index,
@@ -184,7 +198,8 @@ const Block = memo(
         block={block}
         theme={theme}
         rem={rem}
-        monoFont={monoFont}
+        codeFamily={codeFamily}
+        copyable={copyable}
         slug={slug}
         nav={nav}
         index={index}
@@ -211,7 +226,7 @@ const Block = memo(
     const indent = block.listDepth * rem * 1.3;
     return (
       <Box style={{ margin: { left: indent } }}>
-        <Box style={{ width: rem * 1.4, flexShrink: 0 }}>
+        <Box style={{ minWidth: rem * 1.4, flexShrink: 0 }}>
           {block.itemStart && (
             <Text style={{ color: block.task != null ? theme.link : theme.muted }}>
               {marker(block)}
@@ -225,7 +240,8 @@ const Block = memo(
   (a, b) =>
     a.theme === b.theme &&
     a.rem === b.rem &&
-    a.monoFont === b.monoFont &&
+    a.codeFamily === b.codeFamily &&
+    a.copyable === b.copyable &&
     a.slug === b.slug &&
     a.index === b.index &&
     a.highlightBg === b.highlightBg &&
@@ -292,7 +308,7 @@ function blockId(index: number | undefined): string | undefined {
   return index != null ? `md:${index}` : undefined;
 }
 
-function BlockBody({ block, theme, rem, monoFont, slug, nav, index }: BlockProps) {
+function BlockBody({ block, theme, rem, codeFamily, copyable, slug, nav, index }: BlockProps) {
   switch (block.kind) {
     case "heading": {
       const scale = HEADING_SCALE[block.level - 1] ?? 1;
@@ -314,10 +330,10 @@ function BlockBody({ block, theme, rem, monoFont, slug, nav, index }: BlockProps
     }
     case "code":
       return (
-        <CodeBlock block={block} theme={theme} rem={rem} monoFont={monoFont} index={index} />
+        <CodeBlock block={block} theme={theme} rem={rem} codeFamily={codeFamily} copyable={copyable} nav={nav} index={index} />
       );
     case "rule":
-      return <Box style={{ height: 1, background: theme.separator }} />;
+      return <Box style={{ height: theme.separatorWidth ?? 1, background: theme.separator }} />;
     case "image":
       return (
         <Image
@@ -369,6 +385,7 @@ function styledSpans(
     italic: s.italic,
     underline: Boolean(s.link),
     strikethrough: s.strikethrough,
+    link: s.link ?? undefined,
   }));
   if (!opts.cover) return styled;
   const bytes = Buffer.byteLength(text);
@@ -398,7 +415,7 @@ function Table({ block, theme, rem, nav, index }: BlockProps) {
     <Box
       style={{
         flexDirection: "column",
-        border: { width: 1, color: theme.separator },
+        border: { width: theme.separatorWidth ?? 1, color: theme.separator },
         padding: 1,
         overflow: "hidden",
       }}
@@ -408,7 +425,7 @@ function Table({ block, theme, rem, nav, index }: BlockProps) {
           key={r}
           style={{
             background: r === 0 ? theme.codeBg : undefined,
-            border: r > 0 ? { top: [1, theme.separator] } : undefined,
+            border: r > 0 ? { top: [theme.separatorWidth ?? 1, theme.separator] } : undefined,
           }}
         >
           {Array.from({ length: columns }, (_, c) => {
@@ -421,7 +438,7 @@ function Table({ block, theme, rem, nav, index }: BlockProps) {
                   flexGrow: weights[c],
                   flexBasis: 0,
                   justifyContent: CELL_JUSTIFY[align],
-                  border: c > 0 ? { left: [1, theme.separator] } : undefined,
+                  border: c > 0 ? { left: [theme.separatorWidth ?? 1, theme.separator] } : undefined,
                   padding: {
                     left: rem * 0.6,
                     right: rem * 0.6,
@@ -452,7 +469,7 @@ function Table({ block, theme, rem, nav, index }: BlockProps) {
   );
 }
 
-function CodeBlock({ block, theme, rem, monoFont, index }: BlockProps) {
+function CodeBlock({ block, theme, rem, codeFamily, copyable, nav, index }: BlockProps) {
   const spans = useMemo(
     () =>
       highlight(block.text, block.language).map((s) => ({
@@ -462,6 +479,13 @@ function CodeBlock({ block, theme, rem, monoFont, index }: BlockProps) {
       })),
     [block.text, block.language, theme]
   );
+  const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
   return (
     <Box
       style={{
@@ -469,22 +493,38 @@ function CodeBlock({ block, theme, rem, monoFont, index }: BlockProps) {
         background: theme.codeBg,
         cornerRadius: rem * 0.35,
         padding: { left: rem * 0.75, right: rem * 0.75, top: rem * 0.5, bottom: rem * 0.5 },
-        gap: rem * 0.35,
         overflow: "hidden",
       }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      {block.language !== "" && (
-        <Text style={{ color: theme.muted, fontSize: rem * 0.8 }}>
-          {block.language + (block.closed ? "" : " …")}
-        </Text>
-      )}
       <Text
         id={blockId(index)}
-        style={{ wrap: false, color: theme.fg, font: monoFont }}
+        style={{ wrap: true, color: theme.fg, fontFamily: codeFamily ?? "monospace" }}
         spans={spans}
       >
         {block.text}
       </Text>
+      {copyable && (hovered || copied) && (
+        <Box
+          style={{
+            position: "absolute",
+            inset: { top: rem * 0.25, right: rem * 0.35 },
+            padding: { left: rem * 0.4, right: rem * 0.4 },
+            background: theme.codeBg,
+            hoverBackground: theme.separator,
+            cornerRadius: rem * 0.2,
+          }}
+          onClick={() => {
+            nav?.copy(block.text);
+            setCopied(true);
+          }}
+        >
+          <Text style={{ color: theme.muted, fontSize: rem * 0.85, wrap: false, selectable: false }}>
+            {copied ? CODE_COPY.copied : CODE_COPY.copy}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

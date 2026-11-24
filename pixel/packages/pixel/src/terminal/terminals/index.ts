@@ -2,7 +2,9 @@ import type { Detect } from "../terminal";
 import { cmux } from "./cmux";
 import { ghostty } from "./ghostty";
 import { herdr } from "./herdr";
+import { iterm2 } from "./iterm2";
 import { kitty } from "./kitty";
+import { rex } from "./rex";
 import { supacode } from "./supacode";
 import { termuxLauncher } from "./termux-launcher";
 import { tmux } from "./tmux";
@@ -18,10 +20,12 @@ export const TERMINALS: Detect[] = [
   tmux,
   termuxLauncher,
   tty7,
+  rex,
   wezterm,
   kitty,
   cmux,
   supacode,
+  iterm2,
   ghostty,
   vscode,
 ];

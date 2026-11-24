@@ -1,4 +1,7 @@
 mod layout;
+mod text_layout;
+
+pub use text_layout::{TextLayout, TextLeaf, TextLine};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -14,10 +17,12 @@ use crate::scroll::ScrollState;
 use crate::scrollbar::{self, BarState, ScrollbarRects};
 use crate::selection::{DocLayout, DocSelection, DocSelectionState};
 use crate::style::{
-    Color, DEFAULT_SELECTION_COLOR, Dimension, Edges, FlexDirection, Overflow, ScrollbarStyle,
-    SelectionMode, Style,
+    Color, DEFAULT_SELECTION_COLOR, Dimension, Edges, FlexDirection, InsetValue, Layout, Overflow,
+    Position, ScrollAnchor, ScrollbarStyle, SelectionMode, Style,
 };
-use crate::text_input::{Granularity, InputGeometry, TextInput, line_height, offset_to_point};
+use crate::text_input::{
+    CaretShape, Granularity, InputGeometry, TextInput, line_height, offset_to_point,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId {
@@ -38,7 +43,7 @@ impl NodeId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PxRect {
     pub x: f32,
     pub y: f32,
@@ -67,6 +72,35 @@ impl PxRect {
             w: ((self.x + self.w).min(other.x + other.w) - x).max(0.0),
             h: ((self.y + self.h).min(other.y + other.h) - y).max(0.0),
         }
+    }
+    pub fn intersects(&self, other: PxRect) -> bool {
+        let cut = self.intersect(other);
+        cut.w > 0.0 && cut.h > 0.0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.w <= 0.0 || self.h <= 0.0
+    }
+
+    fn union(self, other: PxRect) -> PxRect {
+        if other.is_empty() {
+            return self;
+        }
+        if self.is_empty() {
+            return other;
+        }
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        PxRect {
+            x,
+            y,
+            w: (self.x + self.w).max(other.x + other.w) - x,
+            h: (self.y + self.h).max(other.y + other.h) - y,
+        }
+    }
+
+    fn offset(self, dx: f32, dy: f32) -> PxRect {
+        PxRect { x: self.x + dx, y: self.y + dy, ..self }
     }
 }
 
@@ -123,6 +157,7 @@ pub struct InputProps {
     pub value: Option<String>,
     pub marks: Vec<(u64, usize)>,
     pub caret_color: Color,
+    pub caret_shape: CaretShape,
     pub selection_color: Color,
     pub auto_focus: bool,
     pub submit: bool,
@@ -143,6 +178,7 @@ impl Default for InputProps {
             value: None,
             marks: Vec::new(),
             caret_color: [255, 255, 255, 255],
+            caret_shape: CaretShape::Bar,
             selection_color: [90, 90, 140, 255],
             auto_focus: false,
             submit: false,
@@ -156,12 +192,20 @@ impl Default for InputProps {
 pub struct ImageProps {
     pub src: String,
     pub equal_to: Vec<String>,
+    pub glyph: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotKind {
     Placeholder,
     Error,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextLink {
+    pub start: usize,
+    pub end: usize,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -192,20 +236,24 @@ pub struct Props {
     pub content_height: Option<f32>,
     pub shape: Option<ShapeProps>,
     pub scroll_events: bool,
+    pub stick_events: bool,
     pub wheel_events: bool,
     pub pointer_events: bool,
     pub touch_events: bool,
     pub hover_events: bool,
     pub outside_click_events: bool,
+    pub modal: bool,
     pub drag_events: bool,
     pub selection_events: bool,
     pub move_events: bool,
     pub spans: Vec<TextSpan>,
+    pub links: Vec<TextLink>,
 }
 
 pub(crate) struct InputState {
     pub input: TextInput,
     pub caret_color: Color,
+    pub caret_shape: CaretShape,
     pub selection_color: Color,
     pub submit: bool,
     pub gutter: Option<Gutter>,
@@ -216,9 +264,22 @@ pub(crate) struct InputState {
 pub(crate) struct Resolved {
     pub color: Color,
     pub px: f32,
+    pub families: usize,
+    pub weight: u16,
+    pub italic: bool,
     pub font: usize,
+    pub font_id: usize,
     pub selectable: bool,
     pub selection_color: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WidthAnchor {
+    leaf: NodeId,
+    start: usize,
+    into: f32,
+    row: NodeId,
+    into_row: f32,
 }
 
 pub(crate) struct RNode {
@@ -250,16 +311,30 @@ pub(crate) struct RNode {
     pub touch_events: bool,
     pub hover_events: bool,
     pub outside_click_events: bool,
+    pub modal: bool,
     pub drag_events: bool,
     pub selection_events: bool,
     pub move_events: bool,
     pub spans: Vec<TextSpan>,
+    pub links: Vec<TextLink>,
     pub last_scroll_emit: f32,
     pub bar: BarState,
     pub resolved: Resolved,
     pub abs: PxRect,
     pub visible: PxRect,
+    pub extent: PxRect,
+    pub offscreen: bool,
+    pub list_y: f32,
+    pub measured_width: f32,
+    pub list_height: f32,
+    list_width: f32,
+    width_anchor: Option<WidthAnchor>,
+    pub row_estimate: f32,
+    pub placed_rows: std::ops::Range<usize>,
+    pub stick_events: bool,
+    pub stuck: bool,
     pub order: u32,
+    pub text_offset_y: f32,
 }
 
 struct Slot {
@@ -267,11 +342,58 @@ struct Slot {
     node: Option<RNode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub abs: PxRect,
+    pub visible: PxRect,
+    pub offscreen: bool,
+    pub stuck: bool,
+}
+
+fn snap(raw: PxRect, (x, y): (f32, f32), paints: bool) -> PxRect {
+    if (x, y) == (1.0, 1.0) {
+        return raw;
+    }
+    let edges = |start: f32, size: f32, unit: f32| {
+        let from = (start / unit).round() * unit;
+        let mut to = ((start + size) / unit).round() * unit;
+        if paints && size > 0.0 && to <= from {
+            to = from + unit;
+        }
+        (from, to - from)
+    };
+    let (left, w) = edges(raw.x, raw.w, x);
+    let (top, h) = edges(raw.y, raw.h, y);
+    PxRect { x: left, y: top, w, h }
+}
+
 impl RNode {
+    fn paints(&self) -> bool {
+        let background = match &self.style.background {
+            Some(crate::style::Paint::Solid(color)) => color[3] > 0,
+            Some(crate::style::Paint::Gradient(_)) => true,
+            None => false,
+        };
+        let border = self.style.border.is_some_and(|b| [b.top, b.right, b.bottom, b.left].iter().flatten().any(|s| s.width > 0.0 && s.color[3] > 0));
+        background || border || self.text.is_some() || self.image.is_some() || self.shape.is_some() || self.surface.is_some() || self.input.is_some()
+    }
+
+    fn cell_caret(&self) -> bool {
+        self.input.as_ref().is_some_and(|state| state.caret_shape != CaretShape::Bar)
+    }
+
     pub(crate) fn marks(&self) -> &[crate::text_input::Mark] {
         match &self.input {
             Some(state) => state.input.marks(),
             None => &self.static_marks,
+        }
+    }
+
+    fn placed_children(&self) -> &[NodeId] {
+        if self.style.layout == Layout::List {
+            &self.children[self.placed_rows.start.min(self.children.len())..self.placed_rows.end.min(self.children.len())]
+        } else {
+            &self.children
         }
     }
 }
@@ -283,13 +405,26 @@ pub struct Tree {
     pub(crate) taffy: TaffyTree<MeasureCtx>,
     keys: HashMap<String, NodeId>,
     children_dirty: HashSet<NodeId>,
-    image_slot_parents: Vec<NodeId>,
-    mark_parents: Vec<NodeId>,
+    lists_changed: HashSet<NodeId>,
+    image_slot_parents: HashSet<NodeId>,
+    mark_parents: HashSet<NodeId>,
+    restyled: HashSet<NodeId>,
+    reshaped: HashSet<NodeId>,
+    touched: HashSet<NodeId>,
+    resolve_all: bool,
+    full_place: bool,
+    order_stale: bool,
     paint_order: Vec<NodeId>,
-    scrollables: Vec<NodeId>,
+    modal: Option<NodeId>,
+    modals: HashSet<NodeId>,
+    scrollables: HashSet<NodeId>,
+    lists: HashSet<NodeId>,
+    pending_lists: HashSet<NodeId>,
+    stick_changes: Vec<(NodeId, bool)>,
     focus: Option<NodeId>,
     doc: DocSelectionState,
     base_px: f32,
+    lattice: (f32, f32),
     needs_layout: bool,
     needs_place: bool,
     needs_paint: bool,
@@ -299,10 +434,16 @@ pub struct Tree {
 pub(crate) const DEFAULT_RESOLVED: Resolved = Resolved {
     color: [255, 255, 255, 255],
     px: 16.0,
+    families: crate::fonts::DEFAULT_FAMILIES,
+    weight: crate::fonts::REGULAR,
+    italic: false,
     font: 0,
+    font_id: usize::MAX,
     selectable: true,
     selection_color: DEFAULT_SELECTION_COLOR,
 };
+
+const LOOK_AHEAD_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 impl Tree {
     pub fn new(window: (f32, f32)) -> Self {
@@ -316,13 +457,26 @@ impl Tree {
             taffy: TaffyTree::new(),
             keys: HashMap::new(),
             children_dirty: HashSet::new(),
-            image_slot_parents: Vec::new(),
-            mark_parents: Vec::new(),
+            lists_changed: HashSet::new(),
+            image_slot_parents: HashSet::new(),
+            mark_parents: HashSet::new(),
+            restyled: HashSet::new(),
+            reshaped: HashSet::new(),
+            touched: HashSet::new(),
+            resolve_all: true,
+            full_place: true,
+            order_stale: true,
             paint_order: Vec::new(),
-            scrollables: Vec::new(),
+            modal: None,
+            modals: HashSet::new(),
+            scrollables: HashSet::new(),
+            lists: HashSet::new(),
+            pending_lists: HashSet::new(),
+            stick_changes: Vec::new(),
             focus: None,
             doc: DocSelectionState::default(),
             base_px: 16.0,
+            lattice: (1.0, 1.0),
             needs_layout: true,
             needs_place: true,
             needs_paint: true,
@@ -395,6 +549,7 @@ impl Tree {
     }
 
     pub fn create(&mut self, props: Props) -> NodeId {
+        let modal = props.modal;
         // A node born showing a webview is a swap from nothing, and the presenter needs to
         // hear about it the same way: as changed pixels, since no browser damage will say so.
         if let Some(surface) = props.surface {
@@ -402,7 +557,7 @@ impl Tree {
         }
         let taffy = self
             .taffy
-            .new_leaf(to_taffy(&props.style, props.hidden, props.input.is_some()))
+            .new_leaf(to_taffy(&props.style, props.hidden, props.input.is_some(), self.lattice))
             .expect("taffy leaf");
         let (text, static_marks) = match (&props.input, props.text) {
             (Some(input), _) => (Some(input.initial.clone()), Vec::new()),
@@ -423,6 +578,7 @@ impl Tree {
                 InputState {
                     input,
                     caret_color: p.caret_color,
+                    caret_shape: p.caret_shape,
                     selection_color: p.selection_color,
                     submit: p.submit,
                     gutter: p.gutter,
@@ -449,16 +605,30 @@ impl Tree {
             touch_events: props.touch_events,
             hover_events: props.hover_events,
             outside_click_events: props.outside_click_events,
+            modal: props.modal,
             drag_events: props.drag_events,
             selection_events: props.selection_events,
             move_events: props.move_events,
             spans: props.spans,
+            links: props.links,
             last_scroll_emit: 0.0,
             bar: BarState::default(),
             resolved: DEFAULT_RESOLVED,
             abs: PxRect::ZERO,
             visible: PxRect::ZERO,
+            extent: PxRect::ZERO,
+            offscreen: false,
+            list_y: 0.0,
+            measured_width: f32::NAN,
+            list_height: 0.0,
+            list_width: f32::NAN,
+            width_anchor: None,
+            row_estimate: 0.0,
+            placed_rows: 0..0,
+            stick_events: props.stick_events,
+            stuck: false,
             order: 0,
+            text_offset_y: 0.0,
         };
         let id = match self.free.pop() {
             Some(index) => {
@@ -483,10 +653,20 @@ impl Tree {
         if let Some(key) = props.key {
             self.keys.insert(key, id);
         }
+        if self.node(id).style.overflow == Overflow::Scroll {
+            self.scrollables.insert(id);
+        }
+        if self.node(id).style.layout == Layout::List {
+            self.lists.insert(id);
+        }
         if props.input.as_ref().is_some_and(|p| p.auto_focus) {
             self.focus = Some(id);
         }
         self.needs_layout = true;
+        if modal {
+            self.modals.insert(id);
+            self.order_stale = true;
+        }
         id
     }
 
@@ -505,6 +685,9 @@ impl Tree {
         self.node_mut(parent).children.insert(index, child);
         self.node_mut(child).parent = Some(parent);
         self.children_dirty.insert(parent);
+        self.restyled.insert(child);
+        self.reshaped.insert(parent);
+        self.order_stale = true;
         self.needs_layout = true;
     }
 
@@ -519,6 +702,8 @@ impl Tree {
         self.node_mut(parent).children.retain(|&c| c != child);
         self.node_mut(child).parent = None;
         self.children_dirty.insert(parent);
+        self.reshaped.insert(parent);
+        self.order_stale = true;
     }
     fn sync_dirty_children(&mut self) {
         let dirty: Vec<NodeId> = self.children_dirty.drain().collect();
@@ -526,13 +711,17 @@ impl Tree {
             if self.get(parent).is_none() {
                 continue;
             }
+            let rows_laid_out_alone = self.node(parent).style.layout == Layout::List;
+            if rows_laid_out_alone {
+                self.lists_changed.insert(parent);
+            }
             let ids: Vec<taffy::NodeId> = self
                 .node(parent)
                 .children
                 .iter()
                 .filter(|&&c| {
                     let node = self.node(c);
-                    node.slot.is_none() && node.mark.is_none()
+                    !rows_laid_out_alone && node.slot.is_none() && node.mark.is_none()
                 })
                 .map(|&c| self.node(c).taffy)
                 .collect();
@@ -567,6 +756,14 @@ impl Tree {
             if self.focus == Some(id) {
                 self.focus = None;
             }
+            self.image_slot_parents.remove(&id);
+            self.mark_parents.remove(&id);
+            self.scrollables.remove(&id);
+            self.lists.remove(&id);
+            self.modals.remove(&id);
+            if self.modal == Some(id) {
+                self.modal = None;
+            }
             self.doc.invalidate(id);
         }
         self.needs_layout = true;
@@ -583,7 +780,20 @@ impl Tree {
         let controlled_text = props.input.as_ref().and_then(|p| p.value.clone());
         let node = self.node_mut(id);
         let style_changed = node.style != props.style || node.hidden != props.hidden;
+        let scrolls = props.style.overflow == Overflow::Scroll;
+        let list = props.style.layout == Layout::List;
+        let relisted = node.style.layout != props.style.layout;
         let mut changed = style_changed || node.clickable != props.clickable;
+        if style_changed {
+            let parent = node.parent;
+            if list {
+                self.lists_changed.insert(id);
+            }
+            if let Some(parent) = parent.filter(|&p| self.get(p).is_some_and(|n| n.style.layout == Layout::List)) {
+                self.lists_changed.insert(parent);
+            }
+        }
+        let node = self.node_mut(id);
         node.style = props.style;
         node.hidden = props.hidden;
         node.clickable = props.clickable;
@@ -593,9 +803,12 @@ impl Tree {
         node.touch_events = props.touch_events;
         node.hover_events = props.hover_events;
         node.outside_click_events = props.outside_click_events;
+        let modal_changed = node.modal != props.modal;
+        node.modal = props.modal;
         node.drag_events = props.drag_events;
         node.selection_events = props.selection_events;
         node.move_events = props.move_events;
+        node.stick_events = props.stick_events;
         let mut place_changed = false;
         if node.shape != props.shape {
             node.shape = props.shape;
@@ -605,6 +818,7 @@ impl Tree {
             node.spans = props.spans;
             changed = true;
         }
+        node.links = props.links;
         let mut swapped_surface = None;
         let mut image_changed = false;
         if node.image != props.image {
@@ -634,6 +848,15 @@ impl Tree {
         }
         if place_changed {
             self.needs_place = true;
+            self.full_place = true;
+        }
+        if modal_changed {
+            self.order_stale = true;
+            if props.modal {
+                self.modals.insert(id);
+            } else {
+                self.modals.remove(&id);
+            }
         }
         if image_changed {
             self.needs_layout = true;
@@ -641,18 +864,24 @@ impl Tree {
         if slot_changed || mark_changed {
             if let Some(parent) = self.node(id).parent {
                 self.children_dirty.insert(parent);
+                self.reshaped.insert(parent);
             }
+            self.order_stale = true;
             self.needs_layout = true;
         }
         let node = self.node_mut(id);
         let mut input_removed = false;
+        let mut caret_reshaped = false;
         match (&mut node.input, props.input) {
             (Some(state), Some(p)) => {
+                caret_reshaped = state.caret_shape != p.caret_shape;
                 changed |= state.caret_color != p.caret_color
+                    || state.caret_shape != p.caret_shape
                     || state.selection_color != p.selection_color
                     || state.gutter != p.gutter
                     || state.active_line != p.active_line;
                 state.caret_color = p.caret_color;
+                state.caret_shape = p.caret_shape;
                 state.selection_color = p.selection_color;
                 state.submit = p.submit;
                 state.gutter = p.gutter;
@@ -668,6 +897,7 @@ impl Tree {
                 *state = Some(InputState {
                     input,
                     caret_color: p.caret_color,
+                    caret_shape: p.caret_shape,
                     selection_color: p.selection_color,
                     submit: p.submit,
                     gutter: p.gutter,
@@ -681,6 +911,10 @@ impl Tree {
         }
         if input_removed && self.focus == Some(id) {
             self.focus = None;
+        }
+        if caret_reshaped {
+            self.refresh_input_measure(id);
+            self.needs_layout = true;
         }
         let node = self.node_mut(id);
         let mut text_changed = false;
@@ -736,7 +970,7 @@ impl Tree {
                 (node.taffy, node.style.clone(), node.hidden, node.input.is_some())
             };
             self.taffy
-                .set_style(taffy, to_taffy(&style, hidden, input))
+                .set_style(taffy, to_taffy(&style, hidden, input, self.lattice))
                 .expect("taffy style");
             self.needs_layout = true;
         }
@@ -745,6 +979,26 @@ impl Tree {
         }
         if let Some(surface) = swapped_surface {
             self.changed_surfaces.push(surface);
+        }
+        if scrolls {
+            self.scrollables.insert(id);
+        } else {
+            self.scrollables.remove(&id);
+        }
+        if list {
+            self.lists.insert(id);
+        } else {
+            self.lists.remove(&id);
+        }
+        if relisted {
+            self.children_dirty.insert(id);
+            self.full_place = true;
+        }
+        if style_changed {
+            self.restyled.insert(id);
+            self.order_stale = true;
+        } else if changed {
+            self.reshaped.insert(id);
         }
         if changed {
             self.needs_paint = true;
@@ -761,10 +1015,11 @@ impl Tree {
         }
         state.input.replace_all(text);
         node.text = Some(text.to_string());
+        self.reshaped.insert(id);
         self.needs_layout = true;
     }
 
-    pub(crate) fn input_mut(&mut self, id: NodeId) -> Option<&mut TextInput> {
+    pub fn input_mut(&mut self, id: NodeId) -> Option<&mut TextInput> {
         self.get_mut(id)
             .and_then(|n| n.input.as_mut())
             .map(|s| &mut s.input)
@@ -791,6 +1046,7 @@ impl Tree {
             let text = state.input.text().to_string();
             if node.text.as_deref() != Some(text.as_str()) {
                 node.text = Some(text);
+                self.reshaped.insert(id);
                 self.needs_layout = true;
             }
         }
@@ -871,7 +1127,7 @@ impl Tree {
         node.style.height = Dimension::Px(window.1);
         let (taffy, style, hidden) = (node.taffy, node.style.clone(), node.hidden);
         self.taffy
-            .set_style(taffy, to_taffy(&style, hidden, false))
+            .set_style(taffy, to_taffy(&style, hidden, false, self.lattice))
             .expect("taffy style");
         self.needs_layout = true;
     }
@@ -903,7 +1159,7 @@ impl Tree {
         self.changed_surfaces.push(surface);
     }
 
-    pub(crate) fn mark_paint(&mut self) {
+    pub fn mark_paint(&mut self) {
         self.needs_paint = true;
     }
 
@@ -911,30 +1167,53 @@ impl Tree {
         self.needs_paint = false;
     }
 
-    pub(crate) fn mark_place(&mut self) {
+    pub fn mark_place(&mut self) {
         self.needs_place = true;
     }
 
     pub(crate) fn mark_layout(&mut self) {
         self.needs_layout = true;
+        self.resolve_all = true;
+        self.full_place = true;
+        self.order_stale = true;
     }
 
-    pub fn flush_layout(&mut self, fonts: &[fontdue::Font], base_px: f32) {
-        assert!(!fonts.is_empty());
+    fn restyle_all(&mut self) {
+        let nodes: Vec<(taffy::NodeId, Style, bool, bool)> = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.node.as_ref())
+            .map(|node| (node.taffy, node.style.clone(), node.hidden, node.input.is_some()))
+            .collect();
+        for (taffy, style, hidden, input) in nodes {
+            self.taffy.set_style(taffy, to_taffy(&style, hidden, input, self.lattice)).expect("taffy style");
+        }
+        self.mark_layout();
+    }
+
+    pub fn lattice(&self) -> (f32, f32) {
+        self.lattice
+    }
+
+    pub fn set_lattice(&mut self, lattice: (f32, f32)) {
+        if lattice != self.lattice {
+            self.lattice = lattice;
+            self.restyle_all();
+        }
+    }
+
+    pub fn flush_layout(&mut self, registry: &mut crate::fonts::FontRegistry, base_px: f32) {
+        if base_px != self.base_px {
+            self.mark_layout();
+        }
         self.base_px = base_px;
+        let fonts_needed = self.needs_layout;
         if self.needs_layout {
             crate::profiler::span("tree.sync", || self.sync_dirty_children());
-            self.image_slot_parents.clear();
-            self.mark_parents.clear();
-            crate::profiler::span("tree.resolve", || {
-                self.resolve(
-                    self.root,
-                    Resolved {
-                        px: base_px,
-                        ..DEFAULT_RESOLVED
-                    },
-                )
-            });
+            crate::profiler::span("tree.resolve", || self.resolve_changed(registry));
+        }
+        let fonts: &[crate::fonts::Font] = registry;
+        if fonts_needed {
             crate::profiler::span("tree.widgets", || self.layout_mark_widgets(fonts));
 
             let root_taffy = self.node(self.root).taffy;
@@ -949,23 +1228,520 @@ impl Tree {
                     )
                     .expect("layout")
             });
-            crate::profiler::span("tree.slots", || self.layout_slots(fonts));
             self.needs_layout = false;
             self.needs_place = true;
         }
+        let mut measured = false;
+        if self.needs_place && !self.lists.is_empty() {
+            measured = crate::profiler::span("tree.lists", || self.lay_out_lists(fonts, fonts_needed, None));
+        }
+        if fonts_needed || measured {
+            crate::profiler::span("tree.slots", || self.layout_slots(fonts));
+        }
         if self.needs_place {
-            crate::profiler::span("tree.place", || self.place(fonts));
+            let unchanged_offscreen = (!self.full_place).then(|| self.touched_paths());
+            crate::profiler::span("tree.place", || self.place(fonts, unchanged_offscreen.as_ref()));
             self.needs_place = false;
+            self.full_place = false;
+            self.touched.clear();
             self.needs_paint = true;
+        }
+        if self.doc.has_selection() {
+            self.ensure_order();
+        }
+        if !self.modals.is_empty() || self.modal.is_some() {
+            self.ensure_order();
         }
     }
 
-    fn resolve(&mut self, id: NodeId, inherited: Resolved) {
+    pub(crate) fn ensure_order(&mut self) {
+        if std::mem::take(&mut self.order_stale) {
+            crate::profiler::span("tree.order", || self.rebuild_order());
+        }
+    }
+
+    fn rebuild_order(&mut self) {
+        self.paint_order.clear();
+        self.modal = None;
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            let node = self.node(id);
+            let shown = !node.hidden
+                && (node.mark.is_none() || node.mark_visible)
+                && (node.slot.is_none() || node.slot_visible);
+            if !shown {
+                continue;
+            }
+            let modal = node.modal;
+            stack.extend(node.children.iter().rev());
+            if modal {
+                self.modal = Some(id);
+            }
+            let order = self.paint_order.len() as u32;
+            self.node_mut(id).order = order;
+            self.paint_order.push(id);
+        }
+    }
+
+    fn nodes_at(&self, x: f32, y: f32) -> Vec<NodeId> {
+        let mut found = Vec::new();
+        self.collect_at(self.modal.unwrap_or(self.root), x, y, &mut found);
+        found
+    }
+
+    pub fn modal_root(&self) -> Option<NodeId> {
+        self.modal
+    }
+
+    pub fn inert(&self, id: NodeId) -> bool {
+        let Some(modal) = self.modal else {
+            return false;
+        };
+        let mut current = Some(id);
+        while let Some(node) = current {
+            if node == modal {
+                return false;
+            }
+            current = self.get(node).and_then(|n| n.parent);
+        }
+        true
+    }
+
+    pub(crate) fn paint_children(&self, id: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        let children = self.get(id).map_or(&[][..], RNode::placed_children);
+        let sticky = |child: &NodeId| self.get(*child).is_some_and(|n| n.style.position == Position::Sticky);
+        children.iter().filter(move |c| !sticky(c)).chain(children.iter().filter(move |c| sticky(c))).copied()
+    }
+
+    fn collect_at(&self, id: NodeId, x: f32, y: f32, found: &mut Vec<NodeId>) {
+        let Some(node) = self.get(id) else {
+            return;
+        };
+        let hidden_child = |n: &RNode| n.hidden || (n.mark.is_some() && !n.mark_visible) || (n.slot.is_some() && !n.slot_visible);
+        if hidden_child(node) || node.offscreen || !node.extent.offset(node.abs.x, node.abs.y).contains(x, y) {
+            return;
+        }
+        for child in self.paint_children(id).rev() {
+            self.collect_at(child, x, y, found);
+        }
+        if node.visible.contains(x, y) {
+            found.push(id);
+        }
+    }
+
+    fn resolve_changed(&mut self, registry: &mut crate::fonts::FontRegistry) {
+        let base = Resolved { px: self.base_px, ..DEFAULT_RESOLVED };
+        let restyled = std::mem::take(&mut self.restyled);
+        let reshaped = std::mem::take(&mut self.reshaped);
+        self.touched.extend(restyled.iter().chain(&reshaped).copied());
+        if std::mem::take(&mut self.resolve_all) {
+            self.image_slot_parents.clear();
+            self.mark_parents.clear();
+            self.resolve(self.root, base, registry, true);
+            return;
+        }
+        for &id in &restyled {
+            if self.ancestor_in(id, &restyled) == Some(false) {
+                let inherited = self.inherited(id, base);
+                self.resolve(id, inherited, registry, true);
+            }
+        }
+        for &id in &reshaped {
+            if !restyled.contains(&id) && self.ancestor_in(id, &restyled) == Some(false) {
+                let inherited = self.inherited(id, base);
+                self.resolve(id, inherited, registry, false);
+            }
+        }
+    }
+
+    pub fn rows_pending(&self) -> bool {
+        !self.pending_lists.is_empty()
+    }
+
+    pub fn catch_up_rows(&mut self, fonts: &[crate::fonts::Font], until: Instant) -> bool {
+        let measured = self.lay_out_lists(fonts, false, Some(until));
+        if measured {
+            self.layout_slots(fonts);
+            self.needs_place = true;
+        }
+        measured
+    }
+
+    fn lay_out_lists(&mut self, fonts: &[crate::fonts::Font], relaid: bool, until: Option<Instant>) -> bool {
+        let mut lists: Vec<(Vec<usize>, NodeId)> =
+            self.lists.iter().filter_map(|&id| Some((self.path_from_root(id)?, id))).collect();
+        lists.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut measured = false;
+        self.pending_lists.retain(|id| self.lists.contains(id));
+        self.lists_changed.retain(|id| self.lists.contains(id));
+        for (_, id) in lists {
+            measured |= self.lay_out_list(id, fonts, relaid, until);
+        }
+        measured
+    }
+
+    fn lay_out_list(&mut self, id: NodeId, fonts: &[crate::fonts::Font], relaid: bool, until: Option<Instant>) -> bool {
+        let node = self.node(id);
+        let layout = *self.taffy.layout(node.taffy).expect("layout");
+        let width = (layout.size.width - layout.padding.left - layout.padding.right - layout.border.left - layout.border.right).max(0.0);
+        let top = layout.padding.top + layout.border.top;
+        let bottom = layout.padding.bottom + layout.border.bottom;
+        let view = layout.size.height;
+        let gap = node.style.gap;
+        let rows = node.children.clone();
+        let position = node.scroll.position;
+        let follow_end = node.style.scroll_anchor == ScrollAnchor::End && position >= node.scroll_max - 0.5;
+        let mut estimate = if node.row_estimate > 0.0 { node.row_estimate } else { self.base_px * 3.0 };
+        let stale = |tree: &Self, row: NodeId| {
+            let node = tree.node(row);
+            !node.hidden && (node.measured_width != width || tree.taffy.dirty(node.taffy).unwrap_or(true))
+        };
+        let height = |tree: &Self, row: NodeId| {
+            let node = tree.node(row);
+            if node.hidden {
+                0.0
+            } else if node.measured_width.is_nan() {
+                estimate
+            } else {
+                tree.taffy.layout(node.taffy).map_or(estimate, |l| l.size.height)
+            }
+        };
+        let anchor = if follow_end {
+            rows.len().saturating_sub(1)
+        } else {
+            rows.partition_point(|&row| {
+                let node = self.node(row);
+                node.list_y + height(self, row) <= position
+            })
+            .min(rows.len().saturating_sub(1))
+        };
+        let anchor_y = rows.get(anchor).map_or(0.0, |&row| self.node(row).list_y);
+        let text_anchor = (!follow_end && node.list_width != width)
+            .then(|| {
+                let kept = node.width_anchor.filter(|kept| {
+                    self.get(kept.leaf).is_some()
+                        && self.get(kept.row).is_some_and(|row| row.parent == Some(id) && (position - row.list_y - kept.into_row).abs() < 0.5)
+                });
+                kept.map(|kept| (kept.leaf, kept.start, kept.into)).or_else(|| {
+                    let &row = rows.get(anchor)?;
+                    let cover = self.sticky_cover(row, position - anchor_y, view);
+                    self.text_line_at(row, position - anchor_y + cover, fonts)
+                })
+            })
+            .flatten();
+        let top_row = rows
+            .partition_point(|&row| {
+                let node = self.node(row);
+                node.list_y + height(self, row) <= position
+            })
+            .min(rows.len().saturating_sub(1));
+        let top_y = rows.get(top_row).map_or(0.0, |&row| self.node(row).list_y);
+        let mut first_changed = usize::MAX;
+        let mut measure = |tree: &mut Self, index: usize| {
+            let row = rows[index];
+            if stale(tree, row) {
+                crate::profiler::span("tree.row", || tree.measure_row(row, width, fonts));
+                first_changed = first_changed.min(index);
+            }
+            height(tree, row)
+        };
+        let (ahead, behind) = if follow_end { (0.25, 1.25) } else { (1.25, 0.25) };
+        let (mut below, mut above) = (anchor, anchor);
+        let ahead_until = Instant::now() + LOOK_AHEAD_BUDGET;
+        let mut reach = if follow_end { 0.0 } else { anchor_y - position };
+        while below < rows.len() && reach < view * ahead {
+            if !follow_end && reach >= view && Instant::now() > ahead_until {
+                break;
+            }
+            reach += measure(self, below);
+            below += 1;
+        }
+        reach = 0.0;
+        while above > 0 && reach < view * behind {
+            if (!follow_end || reach >= view) && Instant::now() > ahead_until {
+                break;
+            }
+            above -= 1;
+            reach += measure(self, above);
+        }
+        if let Some(until) = until {
+            while (above > 0 || below < rows.len()) && Instant::now() < until {
+                if below < rows.len() {
+                    measure(self, below);
+                    below += 1;
+                }
+                if above > 0 {
+                    above -= 1;
+                    measure(self, above);
+                }
+            }
+        }
+        let rows_changed = self.lists_changed.contains(&id) || self.node(id).list_width != width;
+        let measured = first_changed != usize::MAX;
+        if !measured && !rows_changed {
+            if relaid {
+                self.pending_lists.insert(id);
+            } else if until.is_some() && above == 0 && below >= rows.len() {
+                self.pending_lists.remove(&id);
+            }
+            if relaid {
+                let node = self.node_mut(id);
+                let max = (node.content_height.unwrap_or(node.list_height) - view).max(0.0);
+                node.scroll_max = max;
+                let moved = if follow_end { max } else { position.min(max) };
+                if moved != position {
+                    node.scroll.position = moved;
+                    node.scroll.target += moved - position;
+                }
+            }
+            return false;
+        }
+        self.lists_changed.remove(&id);
+        self.node_mut(id).list_width = width;
+        let from = if rows_changed { 0 } else { first_changed };
+        if from == 0 {
+            let (mut sum, mut count) = (0.0, 0);
+            for &row in &rows {
+                let node = self.node(row);
+                if !node.hidden && !node.measured_width.is_nan() {
+                    sum += height(self, row);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                estimate = sum / count as f32;
+            }
+        }
+        let height = |tree: &Self, row: NodeId| {
+            let node = tree.node(row);
+            if node.hidden {
+                0.0
+            } else if node.measured_width.is_nan() {
+                estimate
+            } else {
+                tree.taffy.layout(node.taffy).map_or(estimate, |l| l.size.height)
+            }
+        };
+        let mut y = if from == 0 { top } else { self.node(rows[from]).list_y };
+        let mut pending = false;
+        let mut shown = usize::from(from > 0);
+        for &row in &rows[from..] {
+            pending |= stale(self, row);
+            let h = height(self, row);
+            self.node_mut(row).list_y = y;
+            if !self.node(row).hidden {
+                y += h + gap;
+                shown += 1;
+            }
+        }
+        if shown > 0 {
+            y -= gap;
+        }
+        if pending {
+            self.pending_lists.insert(id);
+        } else if from == 0 {
+            self.pending_lists.remove(&id);
+        }
         let node = self.node_mut(id);
+        node.list_height = y + bottom;
+        node.row_estimate = estimate;
+        node.scroll_max = (node.content_height.unwrap_or(node.list_height) - view).max(0.0);
+        let new_position = if follow_end {
+            (node.list_height - view).max(0.0)
+        } else if let Some((leaf, start, into, row, top)) =
+            text_anchor.and_then(|(leaf, start, into)| self.line_top_in(id, leaf, start, fonts).map(|(row, top)| (leaf, start, into, row, top)))
+        {
+            let shown = top + into;
+            let cover = self.sticky_cover(row, shown - self.sticky_cover(row, shown, view), view);
+            self.node_mut(id).width_anchor = Some(WidthAnchor { leaf, start, into, row, into_row: shown - cover });
+            self.node(row).list_y + shown - cover
+        } else {
+            rows.get(anchor).map_or(position, |&row| position + self.node(row).list_y - anchor_y)
+        };
+        let shift = rows.get(top_row).map_or(0.0, |&row| self.node(row).list_y - top_y);
+        let node = self.node_mut(id);
+        node.scroll.anchored += ((position + shift).round() - position.round()) as i64;
+        if new_position != position {
+            node.scroll.position = new_position;
+            node.scroll.target += new_position - position;
+        }
+        measured
+    }
+
+    fn laid_lines(&self, id: NodeId, fonts: &[crate::fonts::Font]) -> Option<(f32, f32, Vec<std::ops::Range<usize>>)> {
+        let node = self.node(id);
+        let text = node.text.as_deref()?;
+        if fonts.is_empty() || node.input.is_some() {
+            return None;
+        }
+        let layout = self.taffy.layout(node.taffy).ok()?;
+        let font = &fonts[node.resolved.font.min(fonts.len() - 1)];
+        let max_width = node.style.wrap.then(|| {
+            (layout.size.width - layout.padding.left - layout.padding.right - layout.border.left - layout.border.right).max(0.0)
+                + crate::wrap::WRAP_SLACK
+        });
+        let lines = crate::wrap::wrap_lines(text, font, node.resolved.px, max_width, node.marks());
+        Some((layout.padding.top + layout.border.top, line_height(font, node.resolved.px), lines))
+    }
+
+    fn sticky_cover(&self, row: NodeId, into: f32, view: f32) -> f32 {
+        let mut cover: f32 = 0.0;
+        let mut stack = vec![(row, 0.0, None::<(f32, f32)>)];
+        while let Some((id, parent_top, parent)) = stack.pop() {
+            let node = self.node(id);
+            let Ok(layout) = self.taffy.layout(node.taffy) else { continue };
+            if node.hidden {
+                continue;
+            }
+            let top = if id == row { 0.0 } else { parent_top + layout.location.y };
+            let h = layout.size.height;
+            if node.style.position == Position::Sticky
+                && let Some((_, parent_bottom)) = parent
+            {
+                let inset = match node.style.inset.top {
+                    Some(InsetValue::Px(v)) => v,
+                    Some(InsetValue::Percent(f)) => f * view,
+                    None => continue,
+                };
+                let shown = (top - into).max(inset).min(parent_bottom - into - h);
+                if shown <= inset + 0.5 && shown + h > 0.0 {
+                    cover = cover.max(shown + h);
+                }
+            }
+            stack.extend(node.children.iter().map(|&child| (child, top, Some((top, top + h)))));
+        }
+        cover
+    }
+
+    fn text_line_at(&self, row: NodeId, y: f32, fonts: &[crate::fonts::Font]) -> Option<(NodeId, usize, f32)> {
+        if y <= 0.0 {
+            return None;
+        }
+        let mut stack = vec![(row, 0.0)];
+        while let Some((id, parent_top)) = stack.pop() {
+            let node = self.node(id);
+            let Ok(layout) = self.taffy.layout(node.taffy) else { continue };
+            let top = if id == row { 0.0 } else { parent_top + layout.location.y };
+            if node.hidden || y < top || y >= top + layout.size.height {
+                continue;
+            }
+            if let Some((inset, line_h, lines)) = self.laid_lines(id, fonts) {
+                let into = y - top - inset;
+                let index = ((into / line_h).floor().max(0.0) as usize).min(lines.len().checked_sub(1)?);
+                return Some((id, lines[index].start, into - index as f32 * line_h));
+            }
+            stack.extend(node.children.iter().map(|&child| (child, top)));
+        }
+        None
+    }
+
+    fn line_top_in(&self, list: NodeId, leaf: NodeId, start: usize, fonts: &[crate::fonts::Font]) -> Option<(NodeId, f32)> {
+        let (inset, line_h, lines) = self.laid_lines(leaf, fonts)?;
+        let index = lines.iter().position(|line| line.end > start || line.start == start).unwrap_or(lines.len().saturating_sub(1));
+        let mut top = inset + index as f32 * line_h;
+        let mut id = leaf;
+        loop {
+            let parent = self.node(id).parent?;
+            if parent == list {
+                return Some((id, top));
+            }
+            top += self.taffy.layout(self.node(id).taffy).ok()?.location.y;
+            id = parent;
+        }
+    }
+
+    fn measure_row(&mut self, row: NodeId, width: f32, fonts: &[crate::fonts::Font]) {
+        use taffy::prelude::length;
+        let node = self.node(row);
+        let taffy_id = node.taffy;
+        let mut style = to_taffy(&node.style, node.hidden, node.input.is_some(), self.lattice);
+        style.size.width = length(width);
+        if self.taffy.style(taffy_id).ok() != Some(&style) {
+            self.taffy.set_style(taffy_id, style).expect("taffy style");
+        }
+        self.taffy
+            .compute_layout_with_measure(
+                taffy_id,
+                taffy::Size { width: taffy::AvailableSpace::Definite(width), height: taffy::AvailableSpace::MaxContent },
+                |known, available, _node, context, _style| layout::measure(known, available, context.as_deref(), fonts),
+            )
+            .expect("row layout");
+        self.node_mut(row).measured_width = width;
+    }
+
+    pub fn take_stick_changes(&mut self) -> Vec<(NodeId, bool)> {
+        std::mem::take(&mut self.stick_changes)
+    }
+
+    fn sticky_y(&self, id: NodeId, rect: PxRect) -> Option<(f32, f32)> {
+        let node = self.get(id)?;
+        let parent = self.get(node.parent?)?;
+        let mut current = node.parent;
+        let port = loop {
+            let at = self.get(current?)?;
+            if at.style.overflow == Overflow::Scroll {
+                break at.visible;
+            }
+            current = at.parent;
+        };
+        let inset = match node.style.inset.top? {
+            InsetValue::Px(v) => v,
+            InsetValue::Percent(f) => f * port.h,
+        };
+        let floor = parent.abs.y + parent.abs.h - rect.h;
+        Some((rect.y.max((port.y + inset).min(floor)), port.y))
+    }
+
+    fn inherited(&self, id: NodeId, base: Resolved) -> Resolved {
+        self.node(id).parent.map_or(base, |parent| self.node(parent).resolved)
+    }
+
+    fn ancestor_in(&self, id: NodeId, set: &HashSet<NodeId>) -> Option<bool> {
+        let mut current = self.get(id)?.parent;
+        let mut found = false;
+        while let Some(at) = current {
+            found |= set.contains(&at);
+            if at == self.root {
+                return Some(found);
+            }
+            current = self.get(at)?.parent;
+        }
+        (id == self.root).then_some(false)
+    }
+
+    fn touched_paths(&self) -> HashSet<NodeId> {
+        let mut paths = HashSet::new();
+        for &id in &self.touched {
+            let mut current = Some(id);
+            while let Some(at) = current {
+                if !paths.insert(at) {
+                    break;
+                }
+                current = self.get(at).and_then(|node| node.parent);
+            }
+        }
+        paths
+    }
+
+    fn resolve(&mut self, id: NodeId, inherited: Resolved, registry: &mut crate::fonts::FontRegistry, deep: bool) {
+        let node = self.node_mut(id);
+        let families = node.style.font_family.unwrap_or(inherited.families);
+        let weight = node.style.font_weight.unwrap_or(inherited.weight);
+        let italic = node.style.font_italic.unwrap_or(inherited.italic);
+        let font = if (families, weight, italic) == (inherited.families, inherited.weight, inherited.italic) && inherited.font_id != usize::MAX {
+            inherited.font
+        } else {
+            registry.resolve(families, weight, italic)
+        };
+        let font_id = registry[font].id();
         let resolved = Resolved {
             color: node.style.color.unwrap_or(inherited.color),
             px: node.style.font_size.unwrap_or(inherited.px),
-            font: node.style.font.unwrap_or(inherited.font),
+            families,
+            weight,
+            italic,
+            font,
+            font_id,
             selectable: node.style.selectable.unwrap_or(inherited.selectable),
             selection_color: node
                 .style
@@ -978,6 +1754,7 @@ impl Tree {
         let image = node.image.clone();
         let wrap = node.style.wrap;
         let is_input = node.input.is_some();
+        let cell_caret = node.cell_caret();
         let marks = node.marks().to_vec();
         let node_text = node.text.clone();
         let non_flow_only = children.iter().all(|&c| {
@@ -989,25 +1766,20 @@ impl Tree {
         } else {
             None
         };
+        self.mark_parents.remove(&id);
+        self.image_slot_parents.remove(&id);
         if (is_input || !marks.is_empty()) && children.iter().any(|&c| self.node(c).mark.is_some())
         {
-            self.mark_parents.push(id);
+            self.mark_parents.insert(id);
         }
         let want = if let Some(image) = image {
             if non_flow_only {
                 if !children.is_empty() {
-                    self.image_slot_parents.push(id);
+                    self.image_slot_parents.insert(id);
                 }
-                let has_placeholder = children
-                    .iter()
-                    .any(|&c| self.node(c).slot == Some(SlotKind::Placeholder));
                 let status = crate::image_cache::status(&image.src, &image.equal_to);
-                let size = if !has_placeholder && status == ImageStatus::Pending {
-                    None
-                } else {
-                    crate::image_cache::image_size(&image.src, &image.equal_to)
-                        .or((status == ImageStatus::Failed).then_some((32, 32)))
-                };
+                let size = crate::image_cache::image_size(&image.src, &image.equal_to)
+                    .or((status == ImageStatus::Failed).then_some((32, 32)));
                 Some(MeasureCtx::Image {
                     size,
                     src: image.src,
@@ -1019,8 +1791,10 @@ impl Tree {
                 text,
                 px: resolved.px,
                 font: resolved.font,
+                font_id: resolved.font_id,
                 wrap,
                 marks,
+                cell_caret,
             }) };
         if self.taffy.get_node_context(taffy) != want.as_ref() {
             self.taffy
@@ -1028,14 +1802,16 @@ impl Tree {
                 .expect("taffy context");
             let _ = self.taffy.mark_dirty(taffy);
         }
-        for child in children {
-            self.resolve(child, resolved);
+        if deep {
+            for child in children {
+                self.resolve(child, resolved, registry, true);
+            }
         }
     }
 
-    fn layout_slots(&mut self, fonts: &[fontdue::Font]) {
+    fn layout_slots(&mut self, fonts: &[crate::fonts::Font]) {
         use taffy::prelude::length;
-        let parents = self.image_slot_parents.clone();
+        let parents: Vec<NodeId> = self.image_slot_parents.iter().copied().collect();
         for id in parents {
             let Some(node) = self.get(id) else { continue };
             let (image_taffy, children) = (node.taffy, node.children.clone());
@@ -1045,7 +1821,7 @@ impl Tree {
                     let child = self.node(child);
                     (child.taffy, child.style.clone(), child.hidden)
                 };
-                let mut taffy_style = to_taffy(&style, hidden, false);
+                let mut taffy_style = to_taffy(&style, hidden, false, self.lattice);
                 taffy_style.size = taffy::Size {
                     width: length(size.width),
                     height: length(size.height),
@@ -1069,8 +1845,8 @@ impl Tree {
         }
     }
 
-    fn layout_mark_widgets(&mut self, fonts: &[fontdue::Font]) {
-        let parents = self.mark_parents.clone();
+    fn layout_mark_widgets(&mut self, fonts: &[crate::fonts::Font]) {
+        let parents: Vec<NodeId> = self.mark_parents.iter().copied().collect();
         for id in parents {
             let Some(node) = self.get(id) else { continue };
             let children = node.children.clone();
@@ -1112,13 +1888,16 @@ impl Tree {
     }
 
     fn refresh_input_measure(&mut self, id: NodeId) {
+        self.touched.insert(id);
         let node = self.node(id);
         let ctx = MeasureCtx::Text {
             text: node.text.clone().unwrap_or_default(),
             px: node.resolved.px,
             font: node.resolved.font,
+            font_id: node.resolved.font_id,
             wrap: node.style.wrap,
             marks: node.marks().to_vec(),
+            cell_caret: node.cell_caret(),
         };
         let taffy = node.taffy;
         if self.taffy.get_node_context(taffy) != Some(&ctx) {
@@ -1129,9 +1908,7 @@ impl Tree {
         }
     }
 
-    fn place(&mut self, fonts: &[fontdue::Font]) {
-        self.paint_order.clear();
-        self.scrollables.clear();
+    fn place(&mut self, fonts: &[crate::fonts::Font], skip: Option<&HashSet<NodeId>>) {
         let layout = self
             .taffy
             .layout(self.node(self.root).taffy)
@@ -1142,7 +1919,17 @@ impl Tree {
             w: layout.size.width,
             h: layout.size.height,
         };
-        self.place_node(self.root, (0.0, 0.0), Some(window), fonts);
+        self.place_node(self.root, (0.0, 0.0), Some(window), fonts, skip);
+    }
+
+    fn single_line_offset(&self, id: NodeId, layout: &taffy::Layout, fonts: &[crate::fonts::Font]) -> f32 {
+        let node = self.node(id);
+        if node.input.is_none() || node.style.wrap {
+            return 0.0;
+        }
+        let font = &fonts[node.resolved.font.min(fonts.len() - 1)];
+        let content = layout.size.height - layout.padding.top - layout.padding.bottom - layout.border.top - layout.border.bottom;
+        ((content - line_height(font, node.resolved.px)) / 2.0).max(0.0).round()
     }
 
     fn place_node(
@@ -1150,19 +1937,28 @@ impl Tree {
         id: NodeId,
         origin: (f32, f32),
         clip: Option<PxRect>,
-        fonts: &[fontdue::Font],
-    ) {
+        fonts: &[crate::fonts::Font],
+        skip: Option<&HashSet<NodeId>>,
+    ) -> PxRect {
         if self.node(id).hidden {
             self.zero_rects(id);
-            return;
+            return PxRect::ZERO;
         }
         let layout = *self.taffy.layout(self.node(id).taffy).expect("layout");
-        let rect = PxRect {
+        let mut raw = PxRect {
             x: origin.0 + layout.location.x,
             y: origin.1 + layout.location.y,
             w: layout.size.width,
             h: layout.size.height,
         };
+        if self.node(id).style.position == Position::Sticky
+            && let Some((y, port_top)) = self.sticky_y(id, raw)
+        {
+            let stuck = y > raw.y + 0.5 && y + raw.h > port_top;
+            raw.y = y;
+            self.set_stuck(id, stuck);
+        }
+        let rect = snap(raw, self.lattice, self.node(id).paints());
         let visible = clip.map_or(rect, |c| rect.intersect(c));
         let moved_surface = {
             let node = self.node(id);
@@ -1171,43 +1967,59 @@ impl Tree {
         if let Some(surface) = moved_surface {
             self.changed_surfaces.push(surface);
         }
+        let text_offset_y = self.single_line_offset(id, &layout, fonts);
         let node = self.node_mut(id);
         node.abs = rect;
         node.visible = visible;
+        node.text_offset_y = text_offset_y;
         let scrolls = node.style.overflow == Overflow::Scroll;
         if scrolls {
-            let content = node.content_height.unwrap_or(layout.content_size.height);
-            node.scroll_max = (content - rect.h).max(0.0);
-            let max = node.scroll_max;
+            let list = node.style.layout == Layout::List;
+            let content = node.content_height.unwrap_or(if list { node.list_height } else { layout.content_size.height });
+            let max = (content - rect.h).max(0.0);
+            if node.style.scroll_anchor == ScrollAnchor::End && node.scroll.position >= node.scroll_max - 0.5 {
+                if node.scroll.target >= node.scroll_max - 0.5 {
+                    node.scroll.target = max;
+                }
+                node.scroll.position = max;
+            }
+            node.scroll_max = max;
             if node.scroll.position > max {
                 node.scroll.position = max;
             }
             if node.scroll.target > max {
                 node.scroll.target = max;
             }
-            self.scrollables.push(id);
         }
-        self.node_mut(id).order = self.paint_order.len() as u32;
-        self.paint_order.push(id);
 
         let node = self.node(id);
         let child_origin = if scrolls {
-            (rect.x, rect.y - node.scroll.position)
+            (raw.x, raw.y - node.scroll.shown())
         } else {
-            (rect.x, rect.y)
+            (raw.x, raw.y)
         };
-        let child_clip = if node.style.overflow != Overflow::Visible {
-            Some(visible)
-        } else {
-            clip
-        };
+        let clips = node.style.overflow != Overflow::Visible;
+        let row_x = (node.style.layout == Layout::List).then(|| raw.x + layout.padding.left + layout.border.left);
+        let child_clip = if clips { Some(visible) } else { clip };
         let image_src = node.image.clone();
-        for child in node.children.clone() {
+        let mut extent = rect;
+        let children = match skip {
+            Some(touched) if row_x.is_some() && !self.touched.contains(&id) => self.rows_to_place(id, touched),
+            _ => {
+                let children = node.children.clone();
+                if row_x.is_some() {
+                    self.node_mut(id).placed_rows = 0..children.len();
+                }
+                children
+            }
+        };
+        for child in children {
             if let Some(mark_id) = self.node(child).mark {
                 match self.mark_child_origin(id, child, mark_id, fonts) {
                     Some(at) => {
                         self.node_mut(child).mark_visible = true;
-                        self.place_node(child, at, Some(visible), fonts);
+                        let placed = self.place_node(child, at, Some(visible), fonts, skip);
+                        extent = extent.union(placed);
                     }
                     None => {
                         self.node_mut(child).mark_visible = false;
@@ -1226,7 +2038,8 @@ impl Tree {
                     );
                     self.node_mut(child).slot_visible = show;
                     if show {
-                        self.place_node(child, (rect.x, rect.y), Some(visible), fonts);
+                        let placed = self.place_node(child, (raw.x, raw.y), Some(visible), fonts, skip);
+                        extent = extent.union(placed);
                     } else {
                         self.zero_rects(child);
                     }
@@ -1235,8 +2048,95 @@ impl Tree {
                     self.node_mut(child).slot_visible = false;
                     self.zero_rects(child);
                 }
-                (None, _) => self.place_node(child, child_origin, child_clip, fonts),
+                (None, _) => {
+                    let origin = match row_x {
+                        Some(x) => (x, child_origin.1 + self.node(child).list_y),
+                        None => child_origin,
+                    };
+                    let placed = self.place_flow_child(child, origin, child_clip, fonts, skip);
+                    extent = extent.union(placed);
+                }
             }
+        }
+        if clips {
+            extent = rect;
+        }
+        self.node_mut(id).extent = extent.offset(-rect.x, -rect.y);
+        extent
+    }
+
+    fn rows_to_place(&mut self, id: NodeId, touched: &HashSet<NodeId>) -> Vec<NodeId> {
+        let node = self.node(id);
+        let rows = &node.children;
+        let reach = node.abs.h / 2.0;
+        let (top, bottom) = (node.scroll.position - reach, node.scroll.position + node.abs.h + reach);
+        let first = rows.partition_point(|&row| self.node(row).list_y < top).saturating_sub(1);
+        let last = rows.partition_point(|&row| self.node(row).list_y < bottom);
+        let near = first..last;
+        let previous = node.placed_rows.start.min(rows.len())..node.placed_rows.end.min(rows.len());
+        let mut chosen: Vec<NodeId> = rows[near.clone()].to_vec();
+        let touched_rows: Vec<NodeId> = touched.iter().copied().filter(|&row| self.get(row).is_some_and(|n| n.parent == Some(id))).collect();
+        chosen.extend(touched_rows.into_iter().filter(|row| !rows[near.clone()].contains(row)));
+        let left: Vec<NodeId> = previous.filter(|i| !near.contains(i)).map(|i| rows[i]).collect();
+        self.node_mut(id).placed_rows = near;
+        for row in left {
+            if !self.node(row).offscreen && self.node(row).style.position != Position::Sticky {
+                self.hide_offscreen(row);
+                self.node_mut(row).offscreen = true;
+            }
+        }
+        chosen
+    }
+
+    fn place_flow_child(
+        &mut self,
+        child: NodeId,
+        origin: (f32, f32),
+        clip: Option<PxRect>,
+        fonts: &[crate::fonts::Font],
+        skip: Option<&HashSet<NodeId>>,
+    ) -> PxRect {
+        if let Some(touched) = skip {
+            let node = self.node(child);
+            let layout = self.taffy.layout(node.taffy).expect("layout");
+            let extent = node.extent.offset(origin.0 + layout.location.x, origin.1 + layout.location.y);
+            let unchanged = !node.hidden
+                && node.style.position != Position::Sticky
+                && !touched.contains(&child)
+                && (layout.size.width, layout.size.height) == (node.abs.w, node.abs.h);
+            if unchanged && clip.is_some_and(|c| !extent.intersects(c)) {
+                if !node.offscreen {
+                    self.hide_offscreen(child);
+                }
+                self.node_mut(child).offscreen = true;
+                return extent;
+            }
+        }
+        let extent = self.place_node(child, origin, clip, fonts, skip);
+        self.node_mut(child).offscreen = clip.is_some_and(|c| !extent.intersects(c));
+        extent
+    }
+
+    fn set_stuck(&mut self, id: NodeId, stuck: bool) {
+        let node = self.node_mut(id);
+        if node.stuck != stuck {
+            node.stuck = stuck;
+            if node.stick_events {
+                self.stick_changes.push((id, stuck));
+            }
+        }
+    }
+
+    fn hide_offscreen(&mut self, id: NodeId) {
+        self.set_stuck(id, false);
+        let node = self.node_mut(id);
+        let hidden_surface = node.surface.filter(|_| node.visible != PxRect::ZERO);
+        node.visible = PxRect::ZERO;
+        if let Some(surface) = hidden_surface {
+            self.changed_surfaces.push(surface);
+        }
+        for child in self.node(id).children.clone() {
+            self.hide_offscreen(child);
         }
     }
 
@@ -1245,7 +2145,7 @@ impl Tree {
         parent: NodeId,
         child: NodeId,
         mark_id: u64,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> Option<(f32, f32)> {
         let node = self.get(parent)?;
         let text = node.text.as_deref()?;
@@ -1277,8 +2177,55 @@ impl Tree {
         }
     }
 
+    pub fn content_y(&self, id: NodeId, ancestor: NodeId) -> Option<f32> {
+        let mut y = 0.0;
+        let mut current = id;
+        while current != ancestor {
+            let node = self.get(current)?;
+            let parent = node.parent?;
+            y += if node.mark.is_some() {
+                node.abs.y - self.get(parent)?.abs.y
+            } else if self.get(parent)?.style.layout == Layout::List {
+                node.list_y
+            } else {
+                self.taffy.layout(node.taffy).ok()?.location.y
+            };
+            let parent_node = self.get(parent)?;
+            if parent != ancestor && parent_node.style.overflow == Overflow::Scroll {
+                y -= parent_node.scroll.shown();
+            }
+            current = parent;
+        }
+        Some(y)
+    }
+
+    pub fn placement(&self, id: NodeId) -> Option<Placement> {
+        let node = self.get(id)?;
+        Some(Placement { abs: node.abs, visible: node.visible, offscreen: node.offscreen, stuck: node.stuck })
+    }
+
     pub fn rect(&self, id: NodeId) -> Option<PxRect> {
-        Some(self.get(id)?.abs)
+        let mut rect = self.get(id)?.abs;
+        if let Some(y) = self.skipped_y(id) {
+            rect.y = y;
+        }
+        Some(rect)
+    }
+
+    fn skipped_y(&self, id: NodeId) -> Option<f32> {
+        let mut skipped = None;
+        let mut current = Some(id);
+        while let Some(at) = current {
+            let node = self.get(at)?;
+            if node.offscreen {
+                skipped = Some(at);
+            }
+            current = node.parent;
+        }
+        let placed = self.get(skipped?)?.parent?;
+        let parent = self.get(placed)?;
+        let scroll = if parent.style.overflow == Overflow::Scroll { parent.scroll.shown() } else { 0.0 };
+        Some(parent.abs.y - scroll + self.content_y(id, placed)?)
     }
 
     pub fn visible_rect(&self, id: NodeId) -> Option<PxRect> {
@@ -1286,21 +2233,13 @@ impl Tree {
     }
 
     pub fn hit_wheel(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.wheel_events && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().find(|&id| self.node(id).wheel_events)
     }
 
     // we may want to be more principled with event propagation than this
     pub fn hit_pointer(&self, x: f32, y: f32) -> Option<NodeId> {
-        for &id in self.paint_order.iter().rev() {
-            let Some(node) = self.get(id) else {
-                continue;
-            };
-            if !node.visible.contains(x, y) {
-                continue;
-            }
+        for id in self.nodes_at(x, y) {
+            let node = self.node(id);
             if node.pointer_events {
                 return Some(id);
             }
@@ -1317,28 +2256,19 @@ impl Tree {
     }
 
     pub fn hit_drag(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.drag_events && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().find(|&id| self.node(id).drag_events)
     }
 
-    pub fn paint_order_of(&self, id: NodeId) -> Option<u32> {
-        Some(self.get(id)?.order)
+    pub fn drawn_after(&self, a: NodeId, b: NodeId) -> bool {
+        self.path_from_root(a) > self.path_from_root(b)
     }
 
     pub fn hit_move(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.move_events && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().find(|&id| self.node(id).move_events)
     }
 
     pub fn hit_hover(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.hover_events && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().find(|&id| self.node(id).hover_events)
     }
 
     pub fn box_metrics(&self, id: NodeId) -> Option<BoxMetrics> {
@@ -1358,47 +2288,63 @@ impl Tree {
     }
 
     pub fn hit_any(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.visible.w > 0.0 && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().next()
+    }
+
+    pub fn pointer_shape_at(&self, x: f32, y: f32) -> &str {
+        let mut current = self.hit_any(x, y).filter(|&id| !self.inert(id));
+        let mut over_text = false;
+        while let Some(id) = current {
+            let Some(node) = self.get(id) else {
+                break;
+            };
+            if let Some(shape) = &node.style.pointer_shape {
+                return shape;
+            }
+            if node.input.is_some() {
+                return "text";
+            }
+            if self.selectable_text_leaf(id) {
+                over_text = true;
+            }
+            if node.clickable {
+                over_text = false;
+            }
+            current = node.parent;
+        }
+        if over_text { "text" } else { "default" }
     }
 
     pub fn hit_click(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.clickable && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().find(|&id| self.node(id).clickable)
     }
 
     pub fn outside_click_targets(&self, x: f32, y: f32) -> Vec<NodeId> {
-        self.paint_order
-            .iter()
-            .copied()
-            .filter(|&id| {
-                self.get(id)
-                    .is_some_and(|node| node.outside_click_events && !node.visible.contains(x, y))
-            })
-            .collect()
+        let mut targets = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.get(id) else { continue };
+            if node.hidden {
+                continue;
+            }
+            if node.outside_click_events && !node.visible.contains(x, y) {
+                targets.push(id);
+            }
+            stack.extend(node.children.iter().rev());
+        }
+        targets
     }
 
     pub fn hover_at(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.paint_order.iter().rev().copied().find(|&id| {
-            self.get(id).is_some_and(|node| {
-                (node.style.hover_background.is_some() || node.style.hover_color.is_some())
-                    && node.visible.contains(x, y)
-            })
+        self.nodes_at(x, y).into_iter().find(|&id| {
+            let node = self.node(id);
+            node.style.hover_background.is_some() || node.style.hover_color.is_some()
         })
     }
 
     pub fn hit_target(&self, x: f32, y: f32) -> Option<HitTarget> {
-        for &id in self.paint_order.iter().rev() {
-            let Some(node) = self.get(id) else {
-                continue;
-            };
-            if !node.visible.contains(x, y) {
-                continue;
-            }
+        for id in self.nodes_at(x, y) {
+            let node = self.node(id);
             if node.input.is_some() {
                 return Some(HitTarget::Input(id));
             }
@@ -1414,17 +2360,16 @@ impl Tree {
                 return Some(HitTarget::Input(input));
             }
         }
-        None
+        self.modal_root()
+            .filter(|&id| self.get(id).is_some_and(|node| node.clickable))
+            .map(HitTarget::Click)
     }
 
     pub fn surface_at(&self, x: f32, y: f32) -> bool {
-        self.paint_order.iter().rev().any(|&id| {
-            self.get(id)
-                .is_some_and(|node| node.surface.is_some() && node.visible.contains(x, y))
-        })
+        self.nodes_at(x, y).into_iter().any(|id| self.node(id).surface.is_some())
     }
 
-    pub(crate) fn selectable_text_leaf(&self, id: NodeId) -> bool {
+    pub fn selectable_text_leaf(&self, id: NodeId) -> bool {
         let Some(node) = self.get(id) else {
             return false;
         };
@@ -1473,11 +2418,10 @@ impl Tree {
     }
 
     pub fn scroll_area_at(&self, x: f32, y: f32) -> Option<ScrollArea> {
-        self.scrollables
-            .iter()
+        self.scroll_nodes()
+            .into_iter()
             .rev()
-            .copied()
-            .find(|&id| self.get(id).is_some_and(|node| node.visible.contains(x, y)))
+            .find(|&id| !self.inert(id) && self.get(id).is_some_and(|node| node.visible.contains(x, y)))
             .and_then(|id| self.scroll_area(id))
     }
 
@@ -1495,14 +2439,29 @@ impl Tree {
     }
 
     pub(crate) fn scroll_nodes(&self) -> Vec<NodeId> {
-        self.scrollables.clone()
+        let mut nodes: Vec<(Vec<usize>, NodeId)> =
+            self.scrollables.iter().filter_map(|&id| Some((self.path_from_root(id)?, id))).collect();
+        nodes.sort_by(|a, b| a.0.cmp(&b.0));
+        nodes.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn path_from_root(&self, id: NodeId) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        let mut current = id;
+        while current != self.root {
+            let parent = self.get(current)?.parent?;
+            path.push(self.get(parent)?.children.iter().position(|&c| c == current)?);
+            current = parent;
+        }
+        path.reverse();
+        Some(path)
     }
 
     pub fn scroll_state(&self, id: NodeId) -> Option<&ScrollState> {
         self.get(id).map(|n| &n.scroll)
     }
 
-    pub(crate) fn scroll_state_mut(&mut self, id: NodeId) -> Option<&mut ScrollState> {
+    pub fn scroll_state_mut(&mut self, id: NodeId) -> Option<&mut ScrollState> {
         self.get_mut(id).map(|n| &mut n.scroll)
     }
 
@@ -1557,27 +2516,30 @@ impl Tree {
         let state = self.get(id)?.input.as_ref()?;
         let mut geometry = self.text_geometry(id)?;
         geometry.origin.0 -= state.input.scroll_x();
+        geometry.caret = state.caret_shape;
         Some(geometry)
     }
 
     pub(crate) fn content_width(&self, id: NodeId) -> Option<f32> {
         let node = self.get(id)?;
         let layout = self.taffy.layout(node.taffy).ok()?;
-        Some((layout.size.width - layout.padding.left - layout.padding.right).max(0.0))
+        Some((layout.size.width - layout.padding.left - layout.padding.right - layout.border.left - layout.border.right).max(0.0))
     }
 
     pub fn text_geometry(&self, id: NodeId) -> Option<InputGeometry> {
         let node = self.get(id)?;
         let layout = self.taffy.layout(node.taffy).ok()?;
+        let rect = self.rect(id)?;
         Some(InputGeometry {
             origin: (
-                node.abs.x + layout.padding.left,
-                node.abs.y + layout.padding.top,
+                rect.x + layout.padding.left + layout.border.left,
+                rect.y + layout.padding.top + layout.border.top + node.text_offset_y,
             ),
             font: node.resolved.font,
             px: node.resolved.px,
+            caret: CaretShape::Bar,
             max_width: node.style.wrap.then(|| {
-                (layout.size.width - layout.padding.left - layout.padding.right).max(0.0)
+                (layout.size.width - layout.padding.left - layout.padding.right - layout.border.left - layout.border.right).max(0.0)
                     + crate::wrap::WRAP_SLACK
             }),
         })
@@ -1587,7 +2549,7 @@ impl Tree {
         &self,
         id: NodeId,
         point: (f32, f32),
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> Option<usize> {
         let text = Tree::text_of(self, id)?;
         let geometry = self.text_geometry(id)?;
@@ -1616,7 +2578,7 @@ impl Tree {
         self.doc.scope()
     }
 
-    pub fn doc_selection_snapshot(&self, fonts: &[fontdue::Font]) -> Option<SelectionSnapshot> {
+    pub fn doc_selection_snapshot(&self, fonts: &[crate::fonts::Font]) -> Option<SelectionSnapshot> {
         let sel = self.doc_selection()?;
         if sel.is_collapsed() {
             return None;
@@ -1681,35 +2643,43 @@ impl Tree {
 
     pub fn doc_selection_blocks(
         &self,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> Vec<(NodeId, Vec<PxRect>, Color)> {
         self.doc.blocks(self, fonts)
     }
 
     fn with_doc<R>(&mut self, f: impl FnOnce(&mut DocSelectionState, &Self) -> R) -> R {
+        self.ensure_order();
+        self.with_doc_unordered(f)
+    }
+
+    fn with_doc_unordered<R>(&mut self, f: impl FnOnce(&mut DocSelectionState, &Self) -> R) -> R {
         let mut doc = std::mem::take(&mut self.doc);
         let out = f(&mut doc, self);
         self.doc = doc;
         out
     }
 
-    pub fn doc_select_down(&mut self, point: (f32, f32), fonts: &[fontdue::Font]) -> bool {
-        let selected = self.with_doc(|doc, tree| doc.select_down(tree, point, fonts));
+    pub fn doc_select_down(&mut self, point: (f32, f32), fonts: &[crate::fonts::Font]) -> bool {
+        let selected = self.with_doc_unordered(|doc, tree| doc.select_down(tree, point, fonts));
+        if self.doc.has_selection() {
+            self.ensure_order();
+        }
         if selected {
             self.needs_paint = true;
         }
         selected
     }
 
-    pub fn doc_select_down_near(&mut self, point: (f32, f32), fonts: &[fontdue::Font]) -> bool {
-        let selected = self.with_doc(|doc, tree| doc.select_down_near(tree, point, fonts));
+    pub fn doc_select_down_near(&mut self, point: (f32, f32), fonts: &[crate::fonts::Font]) -> bool {
+        let selected = self.with_doc_unordered(|doc, tree| doc.select_down_near(tree, point, fonts));
         if selected {
             self.needs_paint = true;
         }
         selected
     }
 
-    pub fn doc_select_drag(&mut self, point: (f32, f32), fonts: &[fontdue::Font]) {
+    pub fn doc_select_drag(&mut self, point: (f32, f32), fonts: &[crate::fonts::Font]) {
         if self.with_doc(|doc, tree| doc.select_drag(tree, point, fonts)) {
             self.needs_paint = true;
         }
@@ -1728,7 +2698,11 @@ impl Tree {
     }
 
     pub fn doc_collapse(&mut self) -> bool {
-        let (had, changed) = self.with_doc(|doc, tree| doc.collapse(tree));
+        let (had, changed) = if self.doc.has_selection() {
+            self.with_doc(|doc, tree| doc.collapse(tree))
+        } else {
+            self.with_doc_unordered(|doc, tree| doc.collapse(tree))
+        };
         if changed {
             self.needs_paint = true;
         }
@@ -1751,7 +2725,7 @@ impl Tree {
         moved
     }
 
-    pub fn doc_extend_vertical(&mut self, up: bool, fonts: &[fontdue::Font]) -> bool {
+    pub fn doc_extend_vertical(&mut self, up: bool, fonts: &[crate::fonts::Font]) -> bool {
         let moved = self.with_doc(|doc, tree| doc.extend_vertical(tree, up, fonts));
         if moved {
             self.needs_paint = true;
@@ -1794,12 +2768,15 @@ impl DocLayout for Tree {
     }
 
     fn unified_ancestor(&self, id: NodeId) -> Option<NodeId> {
+        let modal = self.modal_root();
+        let mut inside_modal = false;
         let mut current = Some(id);
         while let Some(cur) = current {
             let node = self.get(cur)?;
             if node.style.selection_mode == SelectionMode::Unified {
-                return Some(cur);
+                return Some(if inside_modal { modal? } else { cur });
             }
+            inside_modal |= modal == Some(cur);
             current = node.parent;
         }
         None
@@ -1818,17 +2795,31 @@ impl DocLayout for Tree {
     }
 
     fn scope_at(&self, point: (f32, f32)) -> Option<NodeId> {
-        self.paint_order
-            .iter()
-            .rev()
-            .copied()
-            .find(|&id| {
-                self.get(id).is_some_and(|node| {
-                    node.style.overflow == Overflow::Scroll
-                        && node.visible.contains(point.0, point.1)
-                })
-            })
+        self.nodes_at(point.0, point.1)
+            .into_iter()
+            .find(|&id| self.node(id).style.overflow == Overflow::Scroll)
             .or_else(|| Some(self.root()))
+    }
+
+    fn nodes_at(&self, point: (f32, f32)) -> Vec<NodeId> {
+        Tree::nodes_at(self, point.0, point.1)
+    }
+
+    fn text_leaves_on_screen(&self) -> Vec<NodeId> {
+        let mut leaves = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            let node = self.node(id);
+            let shown = !node.hidden && !node.offscreen && (node.mark.is_none() || node.mark_visible) && (node.slot.is_none() || node.slot_visible);
+            if !shown {
+                continue;
+            }
+            if self.is_text_leaf(id) {
+                leaves.push(id);
+            }
+            stack.extend(node.placed_children().iter().rev());
+        }
+        leaves
     }
 
     fn selection_color_of(&self, id: NodeId) -> Option<Color> {

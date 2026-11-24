@@ -22,6 +22,8 @@ import {
   markHandoff,
 } from "./instances";
 import type { Instance } from "./instances";
+import { RELAUNCH_FD_ENV } from "./relaunch";
+import type { RelaunchRequest } from "./relaunch";
 import { createRoot as createEngineRoot } from "./react";
 import type { EngineKeyEvent, PixelRoot, RootOptions as EngineRootOptions } from "./react";
 import { RootContext, ViewRegistry } from "./registry";
@@ -30,6 +32,7 @@ import { WebView } from "./webview";
 import type { WebViewHandle, WebViewProps } from "./webview";
 import { CellZoomFollower, hostDisplayScale } from "./scale";
 import { detect } from "./terminal";
+import { streamFromEnv, terminalFromEnv } from "./terminal/stream";
 import { initOffscreenMode } from "./web/offscreen";
 import {
   broadcastTheme,
@@ -46,6 +49,7 @@ export interface RootOptions
     | "onKey"
     | "onEngineExit"
     | "onLayout"
+    | "layoutIds"
     | "host"
     | "onHostClosed"
     | "onHandoff"
@@ -65,6 +69,7 @@ export interface Root extends Omit<PixelRoot, "render" | "flushSync" | "stop" | 
   loadURL(url: string, options?: LoadOptions): WebViewHandle;
   loadFile(file: string, options?: LoadOptions): WebViewHandle;
   stop(code?: number): void;
+  relaunch: ((request: RelaunchRequest) => void) | null;
 }
 
 function ownTty(): string | undefined {
@@ -110,11 +115,11 @@ export function createRoot(options: RootOptions = {}): Root {
     );
   }
   const env = options.sessionEnv ?? process.env;
-  const terminal = detect(env);
+  const stream = options.stream ?? streamFromEnv(env);
+  const terminal = stream ? null : detect(env);
+  const tty = stream ? undefined : (options.tty ?? env.PIXEL_TTY ?? ownTty());
 
-  const tty = options.tty ?? env.PIXEL_TTY ?? ownTty();
-
-  const embed = env.PIXEL_EMBED ?? null;
+  const embed = stream ? null : (env.PIXEL_EMBED ?? null);
   let owner: Instance | null = tty && !embed ? findOwner(tty) : null;
   const name = options.name ?? app.getName();
   const cellZoom = new CellZoomFollower();
@@ -125,6 +130,7 @@ export function createRoot(options: RootOptions = {}): Root {
   let record: InstanceRecord | null = null;
   let handoff: { tty?: string; socket?: string } | null = null;
   let stopping = false;
+  const relaunchFd = process.env[RELAUNCH_FD_ENV] ? Number(process.env[RELAUNCH_FD_ENV]) : null;
 
   const shutdown = (code: number, then: () => void = () => finish(code)) => {
     if (stopping) return;
@@ -140,10 +146,6 @@ export function createRoot(options: RootOptions = {}): Root {
       }
     }
     flushSessions();
-    try {
-      // wait whats going on here 
-      engineRoot.setPointerShape("text");
-    } catch {}
     try {
       engineRoot.stop();
     } catch {}
@@ -174,6 +176,8 @@ export function createRoot(options: RootOptions = {}): Root {
   const engineRoot = createEngineRoot({
     ...options,
     tty: owner || embed ? undefined : tty,
+    stream: stream ?? undefined,
+    sessionEnv: options.sessionEnv ?? (stream ? terminalFromEnv(env) : undefined),
     host: owner
       ? {
           socket: owner.socket,
@@ -229,10 +233,11 @@ export function createRoot(options: RootOptions = {}): Root {
       options.onColors?.(colors);
     },
     onLayout: (snapshot) => registry?.layout.set(snapshot),
+    layoutIds: () => registry?.watchedRects() ?? [],
     onHandoff: (next) => {
       handoff = next;
     },
-    onHostClosed: () => void ownerLeft(),
+    onHostClosed: () => (stream ? shutdown(0) : void ownerLeft()),
     onEngineExit: (error) => {
       if (error) process.stderr.write(`pixel engine: ${error}\n`);
       shutdown(error ? 1 : 0);
@@ -386,6 +391,12 @@ export function createRoot(options: RootOptions = {}): Root {
     stop(code = 0) {
       shutdown(code);
     },
+    relaunch: relaunchFd != null
+      ? (request) => {
+          fs.writeSync(relaunchFd, JSON.stringify(request));
+          shutdown(0);
+        }
+      : null,
   };
 
   try {

@@ -3,10 +3,8 @@ use std::time::Instant;
 
 use super::{DragPhase, Engine, EngineEvent};
 use crate::menu::MenuClick;
-use crate::terminal::{Mods, Mouse, MouseButton, MouseKind};
+use crate::input::{Mods, Mouse, MouseButton, MouseKind};
 use crate::tree::{HitTarget, NodeId};
-
-const WHEEL_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DragTarget {
@@ -28,47 +26,6 @@ impl Engine {
         if matches!(mouse.kind, MouseKind::Down | MouseKind::Up) {
             self.focus_click = None;
             self.last_pointer_click = Some(now);
-        }
-        let scrolling = matches!(
-            mouse.kind,
-            MouseKind::ScrollUp
-                | MouseKind::ScrollDown
-                | MouseKind::ScrollLeft
-                | MouseKind::ScrollRight
-        );
-        // this is a weird case that I observed where inside kitty 2 scroll events
-        // were being emitted per scroll tick. This is very suspicious and makes me
-        // suspicious that something else was the casue of this, but this is a temporary
-        // work around for now
-        if scrolling {
-            let echo = !self.wheel_echo_consumed
-                && self.last_wheel_tick.is_some_and(|(at, kind, x, y, mods)| {
-                    kind == mouse.kind
-                        && x == mouse.x
-                        && y == mouse.y
-                        && mods == mouse.mods
-                        && now.duration_since(at) < WHEEL_ECHO_WINDOW
-                });
-            if echo {
-                self.wheel_echo_consumed = true;
-                return Ok(());
-            }
-            self.wheel_echo_consumed = false;
-            self.last_wheel_tick = Some((now, mouse.kind, mouse.x, mouse.y, mouse.mods));
-        }
-        if self.use_native && self.native.is_some() {
-            self.ingest_native();
-            let located = self.pixel_mouse.then_some(point);
-            if scrolling && mouse.mods == Mods::default() {
-                if self
-                    .pairing
-                    .on_wheel_tick(located, now, &mut self.hover_oracle)
-                {
-                    return Ok(());
-                }
-            } else if let Some(located) = located {
-                self.hover_oracle.note_local(located, now);
-            }
         }
         if matches!(
             mouse.kind,
@@ -125,11 +82,8 @@ impl Engine {
                     .hit_drag(local.0, local.1)
                     .filter(|&id| {
                         let tree = &self.comp.views[view].tree;
-                        let drag_order = tree.paint_order_of(id).unwrap_or(0);
                         let covered = match tree.hit_target(local.0, local.1) {
-                            Some(HitTarget::Input(t)) | Some(HitTarget::Click(t)) => {
-                                tree.paint_order_of(t).unwrap_or(0) > drag_order
-                            }
+                            Some(HitTarget::Input(t)) | Some(HitTarget::Click(t)) => tree.drawn_after(t, id),
                             _ => false,
                         };
                         !covered
@@ -218,19 +172,7 @@ impl Engine {
                     self.bar_hover = bar_hover;
                     self.comp.views[view].tree.mark_paint();
                 }
-                let hover = self.comp.views[view]
-                    .tree
-                    .hover_at(local.0, local.1)
-                    .map(|id| (view, id));
-                if hover != self.hover {
-                    if let Some((old, _)) = self.hover {
-                        self.comp.views[old].tree.mark_paint();
-                    }
-                    if let Some((new, _)) = hover {
-                        self.comp.views[new].tree.mark_paint();
-                    }
-                    self.hover = hover;
-                }
+                self.track_hover(view, local);
                 self.update_hover_target(view, local, out);
                 if let Some(id) = self.comp.views[view].tree.hit_move(local.0, local.1) {
                     out.push(EngineEvent::MouseMove {
@@ -257,14 +199,6 @@ impl Engine {
                             self.comp.views[view]
                                 .tree
                                 .doc_select_drag((local.0, local.1), fonts);
-                            if let Some((focus_view, _)) = self.focused()
-                                && self.comp.views[view]
-                                    .tree
-                                    .doc_selection()
-                                    .is_some_and(|sel| !sel.is_collapsed())
-                            {
-                                self.comp.views[focus_view].tree.set_focus(None);
-                            }
                         }
                         DragTarget::Node(id) => {
                             out.push(EngineEvent::Drag {
@@ -348,10 +282,6 @@ impl Engine {
                 };
                 self.emit_wheel(view, local, delta, 0.0, false, mouse.mods, out);
             }
-            // Reaching here means the tick was not consumed as pairing
-            // signal: no native gesture (headless, synthetic input) or a
-            // modified scroll (e.g. ctrl+wheel zoom), which always rides the
-            // terminal events — the helper cannot report modifiers.
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let view = self.comp.view_at(point.0);
                 self.mark_scroll(view);
@@ -367,15 +297,42 @@ impl Engine {
                 if let Some(area) = self.comp.views[view].tree.scroll_area_at(local.0, local.1) {
                     let max = area.max_scroll();
                     let node = area.node;
-                    let profile = self.profile;
+                    let profile = self.profile.clone();
                     if let Some(state) = self.comp.views[view].tree.scroll_state_mut(node) {
-                        state.tick(profile, delta, max);
+                        state.tick(profile.as_ref(), delta, max);
                     }
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) fn sync_pointer_shape(&mut self) {
+        let Some(point) = self.cursor else {
+            return;
+        };
+        if self.drag.is_some()
+            || self.pointer_capture.is_some()
+            || self.bar_drag.is_some()
+            || self.comp.divider_drag
+        {
+            return;
+        }
+        let shape = if self.comp.on_divider(point.0) {
+            "ew-resize"
+        } else {
+            let view = self.comp.view_at(point.0);
+            let local = self.comp.to_local(view, point);
+            self.comp.views[view].tree.pointer_shape_at(local.0, local.1)
+        };
+        if self.pointer_shape.as_deref() == Some(shape) {
+            return;
+        }
+        let shape = shape.to_string();
+        if self.backend.set_pointer_shape(&shape).is_ok() {
+            self.pointer_shape = Some(shape);
+        }
     }
 
     pub(super) fn update_hover_target(
@@ -435,7 +392,7 @@ impl Engine {
             precise,
             mods,
         });
-        true
+        tree.scroll_area(node).is_none()
     }
 
     fn mark_pointer(&mut self, name: &'static str, point: (f32, f32)) {
@@ -476,7 +433,7 @@ impl Engine {
 
     fn open_menu(&mut self, view: usize, at: (f32, f32)) {
         let size = self.comp.views[view].size;
-        let style = crate::menu::MenuStyle::from_terminal(&self.colors);
+        let style = crate::menu::MenuStyle::from_colors(&self.colors);
         let focus = self.menu.open(
             &mut self.comp.views[view].tree,
             view,
@@ -527,5 +484,22 @@ impl Engine {
             }
         }
         Ok(true)
+    }
+
+    pub(super) fn track_hover(&mut self, view: usize, local: (f32, f32)) {
+        let hover = self.comp.views[view]
+            .tree
+            .hover_at(local.0, local.1)
+            .map(|id| (view, id));
+        if hover == self.hover {
+            return;
+        }
+        if let Some((old, _)) = self.hover {
+            self.comp.views[old].tree.mark_paint();
+        }
+        if let Some((new, _)) = hover {
+            self.comp.views[new].tree.mark_paint();
+        }
+        self.hover = hover;
     }
 }

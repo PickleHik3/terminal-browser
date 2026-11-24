@@ -22,6 +22,8 @@ Options:
                         proxy the result back to the local terminal-browser instance
   --allow-clipboard-read
                         Lets websites read from clipboard.
+  --transparent         [placeholder copy: Let the terminal show through pages that do not paint
+                        a background. Persist it with terminal-browser config set window.transparent on]
   --no-merge            Do not open the terminal-browser instance as a tab in a neighbor terminal-browser
 
 
@@ -79,6 +81,25 @@ Options:
 Examples:
   terminal-browser new-tab github.com
   terminal-browser new-tab --browser 90107-1 localhost:3000
+`,
+  },
+  "clear-browsing-data": {
+    summary: "Clear cookies, site data and cache, like a browser's Clear browsing data",
+    usage: "terminal-browser clear-browsing-data [options]",
+    body: `
+Clears cookies and site data, and cached images and files, for every site in
+every terminal-browser window, signing you out. Asks first when run in a
+terminal; otherwise needs --yes. Reload open pages to see the change.
+
+Options:
+  -y, --yes           Clear without asking
+  --cookies           Only clear cookies and site data
+  --cache             Only clear cached images and files
+  --browser <key>     A browser key from terminal-browser ls
+
+Examples:
+  terminal-browser clear-browsing-data
+  terminal-browser clear-browsing-data --yes --cookies
 `,
   },
   apps: {

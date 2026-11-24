@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { adjacentPane, paneById } from "../shared";
+import { adjacentPane, paneById, PASTE_KEY } from "../shared";
 import type { PaneRect } from "../shared";
 import type { Detect, Pane, PaneDetails } from "../terminal";
 
@@ -221,6 +221,9 @@ export const kitty: Detect = (env, run) => {
         if (!/bracketed-paste/.test(stderr)) throw error;
         await kitten(target, text);
       }
+    },
+    async pasteKey(pane) {
+      await kitten(["send-text", "--match", `id:${pane}`, "--stdin"], PASTE_KEY);
     },
     async focusPane(pane) {
       await kitten(["focus-window", "--match", `id:${pane}`]);

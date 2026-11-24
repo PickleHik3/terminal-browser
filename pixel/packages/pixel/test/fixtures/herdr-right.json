@@ -25,6 +25,11 @@
         "herdr pane split --pane w1:p1 --direction right --focus --ratio 0.4 --right-click pane",
         "herdr pane run w1:p2 terminal-browser open"
       ]
+    },
+    "pasteKey": {
+      "commands": [
+        "herdr pane send-text w1:p1 \u0016"
+      ]
     }
   }
 }

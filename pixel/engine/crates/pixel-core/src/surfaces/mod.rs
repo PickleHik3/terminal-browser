@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 mod convert;
 
@@ -9,6 +10,63 @@ mod convert;
 pub struct OpaqueArea {
     pub surface: Option<u32>,
     pub rect: Rect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfacePlacement {
+    pub surface: u32,
+    pub rect: [f32; 4],
+    pub visible: [f32; 4],
+    pub size: (u32, u32),
+    pub scroll_tree: Option<Arc<ScrollTree>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScrollTree {
+    pub nodes: Vec<ScrollNode>,
+    pub drawn_layers: Vec<DrawnLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawnLayer {
+    pub layer_id: i32,
+    pub rect: (i32, i32, u32, u32),
+    pub scroll_node_id: i32,
+    pub contents_opaque: bool,
+    pub translation: Option<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollNode {
+    pub element_id: u64,
+    pub id: i32,
+    pub parent_id: i32,
+    pub transform_id: i32,
+    pub container_scroll_node_id: i32,
+    pub container_origin: (i32, i32),
+    pub container_bounds: (u32, u32),
+    pub bounds: (u32, u32),
+    pub scroll_offset: (f32, f32),
+    pub user_scrollable_horizontal: bool,
+    pub user_scrollable_vertical: bool,
+    pub is_composited: bool,
+    pub scrolls_inner_viewport: bool,
+    pub scrolls_outer_viewport: bool,
+    pub to_screen: [f32; 16],
+    pub container_to_screen: [f32; 16],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceCover {
+    pub surface: u32,
+    pub rect: [f32; 4],
+    pub opaque: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SurfaceLayout {
+    pub placements: Vec<SurfacePlacement>,
+    pub covers: Vec<SurfaceCover>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +84,16 @@ impl Rect {
 
     pub fn is_empty(self) -> bool {
         self.w == 0 || self.h == 0
+    }
+
+    pub fn covering(area: crate::tree::PxRect) -> Rect {
+        let (x, y) = (area.x.floor().max(0.0), area.y.floor().max(0.0));
+        Rect {
+            x: x as u32,
+            y: y as u32,
+            w: ((area.x + area.w).ceil() - x).max(0.0) as u32,
+            h: ((area.y + area.h).ceil() - y).max(0.0) as u32,
+        }
     }
 
     pub fn union(self, other: Rect) -> Rect {
@@ -117,10 +185,19 @@ pub struct Surface {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+    pub scroll_tree: Option<Arc<ScrollTree>>,
 }
 
 thread_local! {
     static SURFACES: RefCell<HashMap<u32, Surface>> = RefCell::new(HashMap::new());
+}
+
+pub fn set_scroll_tree(id: u32, scroll_tree: Option<Arc<ScrollTree>>) {
+    SURFACES.with_borrow_mut(|surfaces| {
+        if let Some(surface) = surfaces.get_mut(&id) {
+            surface.scroll_tree = scroll_tree;
+        }
+    });
 }
 
 
@@ -137,6 +214,7 @@ pub fn write(
             width: 0,
             height: 0,
             pixels: Vec::new(),
+            scroll_tree: None,
         });
         let resized = surface.width != width || surface.height != height;
         if resized {

@@ -11,11 +11,13 @@ export function FindBar({
   actions,
   layout,
   theme,
+  safeRight,
 }: {
   state: WebViewState;
   actions: ChromeActions;
   layout: ChromeLayout;
   theme: Theme;
+  safeRight: number;
 }) {
   const rem = layout.rem;
   const [text, setText] = useState("");
@@ -29,7 +31,7 @@ export function FindBar({
     <Box
       style={{
         position: "absolute",
-        inset: { top: layout.toolbarHeight + rem * 0.45, right: rem * 0.75 },
+        inset: { top: layout.toolbarHeight + rem * 0.45, right: rem * 0.75 + safeRight },
         width: rem * 16,
         height: rem * 2,
         alignItems: "center",
@@ -130,12 +132,16 @@ export function DownloadHud({
 
 export function Toast({
   toast,
+  actions,
   layout,
   theme,
+  safeRight,
 }: {
   toast: ToastView;
+  actions: ChromeActions;
   layout: ChromeLayout;
   theme: Theme;
+  safeRight: number;
 }) {
   const rem = layout.rem;
   const detailLines = toast.detail ? toast.detail.split("\n") : [];
@@ -144,35 +150,51 @@ export function Toast({
     <Box
       style={{
         position: "absolute",
-        inset: { top: layout.toolbarHeight + rem * 0.5, right: rem * 0.75 },
+        inset: { top: layout.toolbarHeight + rem * 0.5, right: rem * 0.75 + safeRight },
         flexDirection: "column",
         justifyContent: "center",
-        gap: rem * 0.25,
-        height:
-          rem * (2 + (detailLines.length > 0 ? 0.3 + detailLines.length * 1.05 : 0) + (toast.action ? 1.7 : 0)),
-        padding: { left: rem * 0.9, right: rem * 0.9 },
+        gap: rem * 0.6,
+        maxWidth: Math.min(rem * 21, layout.width - rem * 1.5 - safeRight),
+        padding: { left: rem * 0.9, right: rem * 0.9, top: rem * 0.5, bottom: rem * 0.5 },
         background: toast.alert ? mix(theme.overlay, theme.red, 0.22) : theme.overlay,
         cornerRadius: rem * 0.5,
         border: { width: 1, color: toast.alert ? mix(theme.overlay, theme.red, 0.5) : theme.fieldBorder },
       }}
     >
-      <Text
-        style={{
-          fontSize: detailLines.length > 0 ? rem : rem * 0.9,
-          color: toast.failed ? [255, 143, 146, 255] : theme.fg,
-          wrap: false,
-          selectable: false,
-        }}
-      >
-        {toast.text}
-      </Text>
+      <Box style={{ alignItems: "start", gap: rem * 0.5 }}>
+        <Text
+          style={{
+            flexShrink: 1,
+            fontSize: rem * 0.9,
+            color: toast.failed ? [255, 143, 146, 255] : theme.fg,
+            selectable: false,
+          }}
+        >
+          {toast.text}
+        </Text>
+        {toast.sticky && (
+          <Box
+            style={{
+              width: rem * 1.3,
+              height: rem * 1.3,
+              alignItems: "center",
+              justifyContent: "center",
+              cornerRadius: rem * 0.3,
+              hoverBackground: theme.hover,
+              flexShrink: 0,
+            }}
+            onClick={actions.toastDismiss}
+          >
+            <Icon icon="close" size={rem * 0.9} color={theme.fg} />
+          </Box>
+        )}
+      </Box>
       {detailLines.map((line) => (
         <Text
           key={line}
           style={{
-            fontSize: rem * 0.75,
+            fontSize: rem * 0.9,
             color: theme.muted,
-            wrap: false,
             selectable: false,
           }}
         >
@@ -182,18 +204,19 @@ export function Toast({
       {action && (
         <Box
           style={{
-            height: rem * 1.4,
+            height: rem * 1.7,
             alignItems: "center",
             justifyContent: "center",
-            padding: { left: rem * 0.6, right: rem * 0.6 },
+            padding: { left: rem * 0.8, right: rem * 0.8 },
             cornerRadius: rem * 0.3,
-            background: mix(theme.overlay, theme.accent, 0.25),
-            hoverBackground: mix(theme.overlay, theme.accent, 0.45),
+            background: mix(theme.overlay, theme.fg, 0.14),
+            hoverBackground: mix(theme.overlay, theme.fg, 0.24),
+            border: { width: 1, color: mix(theme.overlay, theme.fg, 0.3) },
             flexShrink: 0,
           }}
           onClick={action.run}
         >
-          <Text style={{ fontSize: rem * 0.8, color: theme.fg, wrap: false, selectable: false }}>
+          <Text style={{ fontSize: rem * 0.9, color: theme.fg, wrap: false, selectable: false }}>
             {action.label}
           </Text>
         </Box>

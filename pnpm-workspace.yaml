@@ -4,6 +4,7 @@ packages:
   - shared
   - monitor
   - pixel/packages/*
+  - pixel/packages/create-pixel/template
   - pixel/packages/native/*
   - pixel/examples/*
 linkWorkspacePackages: true
@@ -11,3 +12,5 @@ onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
   - '@zenbu-labs/pixel'
+overrides:
+  katex: 0.18.11

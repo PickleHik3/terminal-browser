@@ -22,6 +22,9 @@ fs.rmSync(path.join(outDir, "pixel.node"), { force: true });
 fs.copyFileSync(built, path.join(outDir, "pixel.node"));
 
 if (process.platform === "darwin") {
+  // Apple's strip pads the LINKEDIT string table correctly; rust-objcopy
+  // (what rustc would use) does not, and macOS 27.2's dyld rejects the result.
+  if (release) execFileSync("/usr/bin/strip", ["-x", path.join(outDir, "pixel.node")], { stdio: "inherit" });
   const arch = process.arch === "arm64" ? "arm64" : "x86_64";
   execFileSync(
     "swiftc",
@@ -29,7 +32,7 @@ if (process.platform === "darwin") {
       "-O",
       "-target",
       `${arch}-apple-macos11`,
-      path.join(engineDir, "crates", "pixel-core", "native-scroll-helper.swift"),
+      path.join(engineDir, "crates", "pixel-kitty", "native-scroll-helper.swift"),
       "-o",
       path.join(outDir, "native-scroll-helper"),
     ],

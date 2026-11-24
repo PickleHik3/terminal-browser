@@ -2,7 +2,7 @@ use std::io;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use super::{Engine, EngineEvent};
-use crate::terminal::{Mods, Mouse, MouseButton, MouseKind, TOUCH_TIME_MASK, Touch, TouchKind};
+use crate::input::{Mods, Mouse, MouseButton, MouseKind, TOUCH_TIME_MASK, Touch, TouchKind};
 use crate::tree::{NodeId, PxRect};
 
 const CLOCK_RESYNC_MS: f64 = 1000.0;

@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::time::Instant;
 
-use crate::canvas::measure_marked;
+use crate::text_metrics::measure_marked;
 use crate::selection::{
     ClickGesture, ClickTracker, DocPos, DocSelection, line_end, line_range_at, line_start,
     next_char, next_word_boundary, prev_char, prev_word_boundary, word_range_at,
@@ -30,6 +30,8 @@ pub(crate) trait DocLayout {
     fn unified_ancestor(&self, id: NodeId) -> Option<NodeId>;
     fn selection_scope(&self, id: NodeId) -> Option<NodeId>;
     fn scope_at(&self, point: (f32, f32)) -> Option<NodeId>;
+    fn nodes_at(&self, point: (f32, f32)) -> Vec<NodeId>;
+    fn text_leaves_on_screen(&self) -> Vec<NodeId>;
     fn selection_color_of(&self, id: NodeId) -> Option<Color>;
 }
 
@@ -43,6 +45,10 @@ pub(crate) struct DocSelectionState {
 }
 
 impl DocSelectionState {
+    pub(crate) fn has_selection(&self) -> bool {
+        self.selection.is_some_and(|s| s.anchor != s.focus)
+    }
+
     pub(crate) fn scope(&self) -> Option<NodeId> {
         self.scope
     }
@@ -132,7 +138,7 @@ impl DocSelectionState {
         &mut self,
         doc: &impl DocLayout,
         point: (f32, f32),
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> bool {
         let scope = doc.scope_at(point);
         let Some(pos) = pos_hit(doc, point, fonts, scope) else {
@@ -170,7 +176,7 @@ impl DocSelectionState {
         &mut self,
         doc: &impl DocLayout,
         point: (f32, f32),
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> bool {
         let scope = doc.scope_at(point);
         let Some(pos) = pos_near(doc, point, fonts, true, scope) else {
@@ -188,7 +194,7 @@ impl DocSelectionState {
         &mut self,
         doc: &impl DocLayout,
         point: (f32, f32),
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> bool {
         if !self.selecting {
             return false;
@@ -339,7 +345,7 @@ impl DocSelectionState {
         &mut self,
         doc: &impl DocLayout,
         up: bool,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> bool {
         let Some(sel) = self.selection(doc) else {
             return false;
@@ -417,7 +423,7 @@ impl DocSelectionState {
     pub(crate) fn blocks(
         &self,
         doc: &impl DocLayout,
-        fonts: &[fontdue::Font],
+        fonts: &[crate::fonts::Font],
     ) -> Vec<(NodeId, Vec<PxRect>, Color)> {
         let Some((start, end)) = self.range(doc) else {
             return Vec::new();
@@ -491,7 +497,7 @@ impl DocSelectionState {
     }
 }
 
-fn offset_at(doc: &impl DocLayout, id: NodeId, point: (f32, f32), fonts: &[fontdue::Font]) -> usize {
+fn offset_at(doc: &impl DocLayout, id: NodeId, point: (f32, f32), fonts: &[crate::fonts::Font]) -> usize {
     match (doc.text_geometry(id), doc.text_of(id)) {
         (Some(geometry), Some(text)) => geometry.offset_at(text, doc.marks_of(id), point, fonts),
         _ => 0,
@@ -501,15 +507,11 @@ fn offset_at(doc: &impl DocLayout, id: NodeId, point: (f32, f32), fonts: &[fontd
 fn pos_hit(
     doc: &impl DocLayout,
     point: (f32, f32),
-    fonts: &[fontdue::Font],
+    fonts: &[crate::fonts::Font],
     scope: Option<NodeId>,
 ) -> Option<DocPos> {
-    let id = doc.paint_order().iter().rev().copied().find(|&id| {
-        doc.is_text_leaf(id)
-            && (scope.is_none() || doc.selection_scope(id) == scope)
-            && doc
-                .visible_rect(id)
-                .is_some_and(|v| v.contains(point.0, point.1))
+    let id = doc.nodes_at(point).into_iter().find(|&id| {
+        doc.is_text_leaf(id) && (scope.is_none() || doc.selection_scope(id) == scope)
     })?;
     Some(DocPos {
         node: id,
@@ -520,7 +522,7 @@ fn pos_hit(
 fn pos_near(
     doc: &impl DocLayout,
     point: (f32, f32),
-    fonts: &[fontdue::Font],
+    fonts: &[crate::fonts::Font],
     clamp_to_ends: bool,
     scope: Option<NodeId>,
 ) -> Option<DocPos> {
@@ -528,10 +530,7 @@ fn pos_near(
         return Some(pos);
     }
     let mut best: Option<(f32, f32, NodeId)> = None;
-    for &id in doc.paint_order() {
-        if !doc.is_text_leaf(id) {
-            continue;
-        }
+    for id in doc.text_leaves_on_screen() {
         if scope.is_some() && doc.selection_scope(id) != scope {
             continue;
         }
@@ -577,7 +576,7 @@ fn adjacent_leaf(doc: &impl DocLayout, id: NodeId, forward: bool) -> Option<Node
     }
 }
 
-fn caret_point(doc: &impl DocLayout, pos: DocPos, fonts: &[fontdue::Font]) -> Option<(f32, f32, f32)> {
+fn caret_point(doc: &impl DocLayout, pos: DocPos, fonts: &[crate::fonts::Font]) -> Option<(f32, f32, f32)> {
     let geometry = doc.text_geometry(pos.node)?;
     let text = doc.text_of(pos.node)?;
     let font = &fonts[geometry.font.min(fonts.len() - 1)];

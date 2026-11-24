@@ -1,14 +1,15 @@
 import { BrowserWindow, screen } from "electron";
-import type { EngineKeyEvent, PastedImage, PointerEvent, Surface, TouchEvent, WheelEvent } from "../react";
+import type { EngineKeyEvent, PastedImage, PointerEvent, PointerShape, Surface, TouchEvent, WheelEvent } from "../react";
 import {
   allowClipboardRead,
   currentDeviceEmulation,
   emulateMobile,
   onDownloadFor,
+  onPermissionFor,
   routeThroughProxy,
   stopMobileEmulation,
 } from "./browser-session";
-import type { DownloadProgress } from "./browser-session";
+import type { DownloadProgress, PermissionCheck, PermissionGate, PermissionRequest, ProxySetting } from "./browser-session";
 import { cursorShapeFor } from "./cursor";
 import { DevtoolsWindow } from "./devtools";
 import { FaviconCache } from "./favicon";
@@ -80,7 +81,7 @@ export interface HostOptions {
   url: string;
   background: string;
   clipboardRead: boolean;
-  proxy: string | null;
+  proxy: ProxySetting | null;
   browserWindowOptions: BrowserWindowOptions;
 }
 
@@ -123,11 +124,12 @@ export class PageHost {
   private readonly bitmaps: BitmapPresenter;
   private lastFrameSize: { width: number; height: number } | null = null;
   onFrameSubmitted: (() => void) | null = null;
-  cursorShape = "default";
+  cursorShape: PointerShape = "default";
   onCursorChange: ((shape: string) => void) | null = null;
   onOpenWindow: OpenWindowPolicy | null = null;
   onQuit: (() => void) | null = null;
   onDownload: ((progress: DownloadProgress) => void) | null = null;
+  onPermission: PermissionGate | null = null;
   private readonly popups: PopupWindow[] = [];
   onPopupChange: (() => void) | null = null;
   get popup(): PopupWindow | null {
@@ -164,9 +166,11 @@ export class PageHost {
       windowOptions(this.browserWindowOptions, size, offscreenPreferences(this.renderScale)),
     );
     prepareSession(this.window.webContents.session);
-    if (options.proxy) void routeThroughProxy(this.window.webContents.session, options.proxy);
+    const proxied = options.proxy ? routeThroughProxy(this.window.webContents.session, options.proxy) : null;
+    if (options.proxy) this.window.webContents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
     if (this.clipboardRead) allowClipboardRead(this.window.webContents);
     onDownloadFor(this.window.webContents, (progress) => this.onDownload?.(progress));
+    this.gatePermissions(this.window.webContents);
     this.input = new PageInput({
       contents: () => this.window.webContents,
       scale: () => this.layout.scale,
@@ -234,6 +238,12 @@ export class PageHost {
     this.window.webContents.on("page-title-updated", (_event, title) => {
       this.updateState({ title });
     });
+    this.window.webContents.on("audio-state-changed", (event) => {
+      this.updateState({ audible: event.audible });
+    });
+    this.window.webContents.on("media-capture-changed", (_event, capturing) => {
+      this.updateState({ capturing });
+    });
     this.window.webContents.on("cursor-changed", (_event, type) => {
       const shape = cursorShapeFor(type);
       if (shape === this.cursorShape) return;
@@ -261,12 +271,23 @@ export class PageHost {
         if (!this.stopped) void this.applyDeviceEmulation().catch(() => {});
       });
     }
-    void this.window.loadURL(options.url);
+    if (proxied) {
+      void proxied.catch(() => {}).then(() => {
+        if (!this.window.isDestroyed()) void this.window.loadURL(options.url);
+      });
+    }
+    else void this.window.loadURL(options.url);
     this.onState(this.state);
   }
 
   get webContents(): Electron.WebContents {
     return this.window.webContents;
+  }
+
+  setAudioMuted(muted: boolean) {
+    if (this.stopped) return;
+    this.window.webContents.setAudioMuted(muted);
+    this.updateState({ muted });
   }
 
   resize(layout: SurfaceLayout, options?: { keepFrame?: boolean }) {
@@ -625,8 +646,17 @@ export class PageHost {
     };
   }
 
+  private gatePermissions(contents: Electron.WebContents) {
+    onPermissionFor(contents, {
+      request: (request: PermissionRequest) =>
+        this.onPermission ? this.onPermission.request(request) : Promise.resolve(false),
+      check: (check: PermissionCheck) => this.onPermission?.check(check) ?? false,
+    });
+  }
+
   private adoptPopup(child: Electron.BrowserWindow) {
     if (this.clipboardRead) allowClipboardRead(child.webContents);
+    this.gatePermissions(child.webContents);
     const size = this.pendingPopupSize ?? { width: 480, height: 360 };
     this.pendingPopupSize = null;
     child.webContents.on("did-create-window", (grandchild) => this.adoptPopup(grandchild));

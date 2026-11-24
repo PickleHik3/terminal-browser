@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { debug } from "../debug";
 import { useNodeRect } from "../layout";
@@ -9,6 +9,7 @@ import type {
   MouseMoveEvent,
   NodeHandle,
   PointerEvent,
+  PointerShape,
   Surface,
   WheelEvent,
 } from "../react";
@@ -24,7 +25,7 @@ export function GuestView({ guest, active }: { guest: Guest; active: boolean }) 
   const boxRef = useRef<NodeHandle>(null);
   const rect = useNodeRect(boxRef, registry);
   const surface = useRef<Surface | null>(null);
-  const hovered = useRef(false);
+  const [pointerShape, setPointerShape] = useState<PointerShape>("default");
   const wheel = useRef({ x: 0, y: 0 });
   const greeted = useRef(false);
 
@@ -35,6 +36,7 @@ export function GuestView({ guest, active }: { guest: Guest; active: boolean }) 
       devtoolsEnabled: false,
       externalDevtools: false,
       externalDevtoolsAction: null,
+      externalDevtoolsCursor: null,
       toggleDevtools: () => {},
       handleKey: (event: EngineKeyEvent) => {
         guest.send({ type: "key", ...event });
@@ -77,7 +79,7 @@ export function GuestView({ guest, active }: { guest: Guest; active: boolean }) 
       });
     };
     guest.onPointer = (shape) => {
-      if (hovered.current) registry.setPointerShape(shape);
+      setPointerShape(shape as PointerShape);
     };
     guest.onClipboard = (text) => registry.root.setClipboard(text);
     return () => {
@@ -184,6 +186,7 @@ export function GuestView({ guest, active }: { guest: Guest; active: boolean }) 
             inset: { top: 0, left: 0 },
             width: snapped.width,
             height: snapped.height,
+            pointerShape,
           }}
           onPointer={(event: PointerEvent) => {
             registry.focus(entry);
@@ -191,13 +194,6 @@ export function GuestView({ guest, active }: { guest: Guest; active: boolean }) 
           }}
           onMouseMove={(event: MouseMoveEvent) => forward(event, "move")}
           onWheel={scroll}
-          onMouseEnter={() => {
-            hovered.current = true;
-          }}
-          onMouseLeave={() => {
-            hovered.current = false;
-            registry.setPointerShape("default");
-          }}
         />
       )}
     </Box>

@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from "electron";
 import type { WebContents } from "electron";
-import type { Surface } from "../react";
+import type { PointerShape, Surface } from "../react";
 import type { DevtoolsDock } from "./types";
 import { cursorShapeFor } from "./cursor";
 import { frameRate } from "./frame-rate";
@@ -27,7 +27,7 @@ export class DevtoolsWindow {
   private cdpAttached = false;
   private destroyed = false;
   private pendingPanel: string | null = null;
-  cursorShape = "default";
+  cursorShape: PointerShape = "default";
   onCursorChange: ((shape: string) => void) | null = null;
   private readonly onDisplayChange = () => {
     if (this.destroyed) return;

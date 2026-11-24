@@ -1,5 +1,14 @@
 import type { Rgba } from "./native";
 
+export type FontFamily = string | string[];
+
+export interface FontFace {
+  family: string;
+  src: string;
+  weight?: number;
+  style?: "normal" | "italic";
+}
+
 export type Color = Rgba | [number, number, number] | string;
 
 export interface Edges {
@@ -30,6 +39,13 @@ export interface ScrollbarStyle {
 
 export type BorderSide = [width: number, color: Color];
 
+export type PointerShape =
+  | "default" | "pointer" | "text" | "crosshair" | "wait" | "help" | "progress"
+  | "cell" | "vertical-text" | "context-menu" | "alias" | "copy" | "move"
+  | "no-drop" | "not-allowed" | "grab" | "grabbing" | "all-scroll" | "zoom-in" | "zoom-out"
+  | "e-resize" | "n-resize" | "ne-resize" | "nw-resize" | "s-resize" | "se-resize"
+  | "sw-resize" | "w-resize" | "ns-resize" | "ew-resize" | "nesw-resize" | "nwse-resize";
+
 export interface GradientStop {
   at: number;
   color: Color;
@@ -47,6 +63,7 @@ export type Border =
 
 export interface Style {
   flexDirection?: "row" | "column";
+  flexWrap?: "nowrap" | "wrap";
   flexGrow?: number;
   flexShrink?: number;
   flexBasis?: number | `${number}%` | "auto";
@@ -58,9 +75,11 @@ export interface Style {
   padding?: number | Edges;
   margin?: number | Edges;
   gap?: number;
-  position?: "flow" | "absolute";
+  position?: "flow" | "absolute" | "sticky";
   inset?: InsetEdges;
   overflow?: "visible" | "hidden" | "scroll";
+  layout?: "flex" | "list";
+  scrollAnchor?: "auto" | "end";
   justifyContent?: "start" | "center" | "end" | "space-between";
   alignItems?: "start" | "center" | "end" | "stretch";
   background?: Color | LinearGradient;
@@ -70,7 +89,9 @@ export interface Style {
   border?: Border;
   color?: Color;
   fontSize?: number;
-  font?: number;
+  fontFamily?: FontFamily;
+  fontWeight?: number | "normal" | "bold";
+  fontStyle?: "normal" | "italic";
   hoverBackground?: Color;
   hoverColor?: Color;
   opaque?: boolean;
@@ -85,6 +106,7 @@ export interface Style {
    * makes the highlight extend to the entire available space of the selection container instead of just the text
    */
   selectionMode?: "text" | "unified";
+  pointerShape?: PointerShape;
 }
 
 export function parseColor(color: Color | undefined): Rgba | undefined {
@@ -129,6 +151,7 @@ function serializeBorder(border: Border): Record<string, unknown> {
 export function serializeStyle(style: Style): Record<string, unknown> {
   return {
     flexDirection: style.flexDirection,
+    flexWrap: style.flexWrap,
     flexGrow: style.flexGrow,
     flexShrink: style.flexShrink,
     flexBasis: style.flexBasis,
@@ -143,6 +166,8 @@ export function serializeStyle(style: Style): Record<string, unknown> {
     position: style.position,
     inset: style.inset,
     overflow: style.overflow,
+    layout: style.layout,
+    scrollAnchor: style.scrollAnchor,
     justifyContent: style.justifyContent,
     alignItems: style.alignItems,
     background: style.background === undefined ? undefined : serializePaint(style.background),
@@ -150,7 +175,9 @@ export function serializeStyle(style: Style): Record<string, unknown> {
     border: style.border && serializeBorder(style.border),
     color: parseColor(style.color),
     fontSize: style.fontSize,
-    font: style.font,
+    fontFamily: style.fontFamily,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
     hoverBackground: parseColor(style.hoverBackground),
     hoverColor: parseColor(style.hoverColor),
     wrap: style.wrap,
@@ -159,6 +186,7 @@ export function serializeStyle(style: Style): Record<string, unknown> {
     opaque: style.opaque,
     selectionColor: parseColor(style.selectionColor),
     selectionMode: style.selectionMode,
+    pointerShape: style.pointerShape,
     scrollbar: style.scrollbar && {
       width: style.scrollbar.width,
       hoverWidth: style.scrollbar.hoverWidth,

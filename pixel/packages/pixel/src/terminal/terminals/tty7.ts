@@ -1,4 +1,4 @@
-import { bracketedPaste, paneById, shellQuote } from "../shared";
+import { bracketedPaste, paneById, PASTE_KEY, shellQuote } from "../shared";
 import type { Detect, Pane, PaneDetails } from "../terminal";
 
 interface Tty7Pane {
@@ -55,6 +55,9 @@ export const tty7: Detect = (env, run) => {
     listPanes,
     async sendText(pane, text) {
       await tty7(["send", `%${pane}`, bracketedPaste(text)]);
+    },
+    async pasteKey(pane) {
+      await tty7(["send", `%${pane}`, PASTE_KEY]);
     },
     async split({ from, direction, command, size }) {
       if (direction !== "right" && direction !== "down") {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Box, Text } from "./react";
-import type { PointerEvent, Surface, WheelEvent } from "./react";
+import type { PointerEvent, PointerShape, Surface, WheelEvent } from "./react";
 import { Icon } from "./icons";
 import type { Theme } from "./theme";
 import type { Rect } from "./devtools-layout";
@@ -20,9 +20,9 @@ export function PopupCard({
   rem,
   theme,
   surface,
+  pointerShape,
   onPointer,
   onWheel,
-  onHover,
   onClose,
 }: {
   view: PopupView;
@@ -30,9 +30,9 @@ export function PopupCard({
   rem: number;
   theme: Theme;
   surface: Surface;
+  pointerShape: PointerShape;
   onPointer(event: PointerEvent): void;
   onWheel(event: WheelEvent): void;
-  onHover(hovering: boolean): void;
   onClose(): void;
 }) {
   const [closeHover, setCloseHover] = useState(false);
@@ -104,11 +104,9 @@ export function PopupCard({
         </Box>
         <Box
           surface={surface}
-          style={{ width: view.width, height: view.height, background: theme.bg }}
+          style={{ width: view.width, height: view.height, background: theme.bg, pointerShape }}
           onPointer={onPointer}
           onWheel={onWheel}
-          onMouseEnter={() => onHover(true)}
-          onMouseLeave={() => onHover(false)}
         />
       </Box>
     </>

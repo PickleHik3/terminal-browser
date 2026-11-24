@@ -136,7 +136,8 @@ const OpenBody = z.object({ url: z.string().optional(), cols: z.number().optiona
 const STATE_WAIT_MS = 1000;
 const MAX_IMAGE_PX = 4096;
 const InputBody = z.object({ events: z.array(z.unknown()) });
-const TextBody = z.object({ text: z.string().trim().min(1) });
+const AgentTextBody = z.object({ text: z.string().trim().min(1), screenshot: z.string().nullish() });
+type AgentText = { text: string; screenshot: string | null };
 
 class Bridge {
   port: number | null = null;
@@ -148,7 +149,7 @@ class Bridge {
   title = "";
   alive = false;
   error: string | null = null;
-  inbox: string[] = [];
+  inbox: AgentText[] = [];
   private conn: net.Socket | null = null;
   private child: ChildProcess | null = null;
   private pixelServer: net.Server | null = null;
@@ -197,15 +198,15 @@ class Bridge {
     });
   }
 
-  pushInbox(text: string): void {
-    this.inbox.push(text);
+  pushInbox(item: AgentText): void {
+    this.inbox.push(item);
     this.changed();
   }
 
-  takeInbox(): string[] {
-    const texts = this.inbox.splice(0, this.inbox.length);
-    if (texts.length > 0) this.changed();
-    return texts;
+  takeInbox(): AgentText[] {
+    const items = this.inbox.splice(0, this.inbox.length);
+    if (items.length > 0) this.changed();
+    return items;
   }
 
 
@@ -489,11 +490,11 @@ function routes(bridge: Bridge): Record<string, Handler> {
       bridge.input(body.events);
       return [200, {}];
     }),
-    "POST /agent-text": withBody(TextBody, (body) => {
-      bridge.pushInbox(body.text);
+    "POST /agent-text": withBody(AgentTextBody, (body) => {
+      bridge.pushInbox({ text: body.text, screenshot: body.screenshot ?? null });
       return [200, {}];
     }),
-    "POST /inbox/take": () => [200, { texts: bridge.takeInbox() }],
+    "POST /inbox/take": () => [200, { items: bridge.takeInbox() }],
     "POST /browser/close": () => {
       bridge.hide();
       return [200, bridge.state()];

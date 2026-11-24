@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { bracketedPaste, shellQuote } from "../shared";
+import { bracketedPaste, PASTE_KEY, shellQuote } from "../shared";
 import type { Detect, Direction, PaneDetails } from "../terminal";
 
 interface HerdrPaneSplitResult {
@@ -148,6 +148,9 @@ export const herdr: Detect = (env, run) => {
     },
     async sendText(pane, text) {
       await herdr(["pane", "send-text", pane, bracketedPaste(text)]);
+    },
+    async pasteKey(pane) {
+      await herdr(["pane", "send-text", pane, PASTE_KEY]);
     },
     focusPane,
     async split({ from, direction, command, size }) {

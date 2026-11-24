@@ -1,4 +1,4 @@
-import { adjacentPane, paneById, shellQuote } from "../shared";
+import { adjacentPane, paneById, PASTE_KEY, shellQuote } from "../shared";
 import type { PaneRect } from "../shared";
 import type { Detect, Pane, PaneDetails } from "../terminal";
 
@@ -116,6 +116,9 @@ export const cmux: Detect = (env, run) => {
     neighbor,
     async sendText(pane, text) {
       await cmux(["rpc", "terminal.paste", JSON.stringify({ text, surface_id: pane, submit_key: "none" })]);
+    },
+    async pasteKey(pane) {
+      await cmux(["send", "--surface", pane, "--", PASTE_KEY]);
     },
     async focusPane(pane) {
       await cmux(["focus-panel", "--panel", pane]);

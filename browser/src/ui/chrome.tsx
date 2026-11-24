@@ -4,10 +4,12 @@ import type { EngineInfo, Rgba, Surface } from "@zenbu-labs/pixel";
 import type { WebViewState } from "@zenbu-labs/pixel";
 import { Icon } from "./icons";
 import type { IconName } from "./icons";
+import { ClearDataDialog } from "./clear-data-dialog";
 import { PageContextMenu } from "./context-menu";
 import { MarkupCanvas } from "./markup-canvas";
 import { NewTabCard, PaletteCard, UrlCard } from "./modals";
 import { DownloadHud, FindBar, Toast, ZoomHud } from "./overlays";
+import { PermissionPrompt } from "./permission-prompt";
 import { SettingsCard } from "./settings";
 import {
   RecordBar,
@@ -19,15 +21,18 @@ import { TabStrip } from "./tab-strip";
 import { makeTheme, mix, withAlpha } from "./theme";
 import type { Theme } from "./theme";
 import { usePulse } from "./pulse";
+import { REX_ZOOM_BUTTONS_POINTS, useInsideRexZoom } from "./rex-zoom";
 import type { RecordView } from "../record/types";
 import type {
   ChromeActions,
   ChromeLayout,
+  ClearDataView,
   DownloadView,
   NewTabView,
   DevtoolsView,
   PageMenuView,
   PaletteView,
+  PermissionPromptView,
   SettingsView,
   ToastView,
   TabActions,
@@ -40,7 +45,6 @@ export function Chrome({
   actions,
   layout,
   colors,
-  font,
   findOpen,
   palette,
   tabs,
@@ -50,7 +54,9 @@ export function Chrome({
   download,
   toast,
   pageMenu,
+  permissionPrompt,
   settings,
+  clearData,
   dividerEngaged,
   record,
   recordSurface,
@@ -59,12 +65,13 @@ export function Chrome({
   devtools,
   profiling,
   grabActive,
+  env,
+  displayScale,
 }: {
   state: WebViewState;
   actions: ChromeActions;
   layout: ChromeLayout;
   colors: EngineInfo["colors"];
-  font: number;
   findOpen: boolean;
   palette: PaletteView | null;
   tabs: TabRow[];
@@ -74,7 +81,9 @@ export function Chrome({
   download: DownloadView | null;
   toast: ToastView | null;
   pageMenu: PageMenuView | null;
+  permissionPrompt: PermissionPromptView | null;
   settings: SettingsView | null;
+  clearData: ClearDataView | null;
   dividerEngaged: boolean;
   record: RecordView | null;
   recordSurface: Surface | null;
@@ -83,11 +92,15 @@ export function Chrome({
   devtools: DevtoolsView | null;
   profiling: boolean;
   grabActive: boolean;
+  env: NodeJS.ProcessEnv;
+  displayScale: number;
 }) {
   const theme = useMemo(() => makeTheme(colors), [colors]);
   const progress = useProgress(state.loading);
   const agentActive = tabs.some((tab) => tab.active && tab.agentControlled);
   const glowPulse = usePulse(agentActive);
+  const safeRight = useInsideRexZoom(env) ? Math.round(REX_ZOOM_BUTTONS_POINTS * displayScale) : 0;
+  const pageSafeRight = layout.toolbarHeight > 0 ? 0 : safeRight;
   return (
     <Box
       style={{
@@ -97,12 +110,11 @@ export function Chrome({
         background: theme.bg,
         color: theme.fg,
         fontSize: layout.rem,
-        font,
       }}
     >
       {layout.toolbarHeight > 0 &&
         (record?.stopped ? (
-          <ReviewToolbar view={record} actions={actions} layout={layout} theme={theme} />
+          <ReviewToolbar view={record} actions={actions} layout={layout} theme={theme} safeRight={safeRight} />
         ) : (
           <Toolbar
             state={state}
@@ -113,6 +125,7 @@ export function Chrome({
             record={record}
             profiling={profiling}
             grabActive={grabActive}
+            safeRight={safeRight}
           />
         ))}
       <BrowserTabContents
@@ -147,35 +160,38 @@ export function Chrome({
         <RecordBar view={record} actions={actions} layout={layout} theme={theme} />
       )}
       {record && layout.toolbarHeight === 0 && (
-        <RecordCornerButton view={record} actions={actions} layout={layout} theme={theme} />
+        <RecordCornerButton view={record} actions={actions} layout={layout} theme={theme} safeRight={pageSafeRight} />
       )}
       {pageMenu && (
         <PageContextMenu view={pageMenu} actions={actions} layout={layout} theme={theme} />
       )}
       {findOpen && (
-        <FindBar state={state} actions={actions} layout={layout} theme={theme} />
+        <FindBar state={state} actions={actions} layout={layout} theme={theme} safeRight={pageSafeRight} />
+      )}
+      {permissionPrompt && !record?.canvas && (
+        <PermissionPrompt view={permissionPrompt} actions={actions} layout={layout} theme={theme} />
       )}
       {zoomHud != null && (
         <ZoomHud factor={zoomHud} layout={layout} theme={theme} findOpen={findOpen} />
       )}
       {download && <DownloadHud download={download} layout={layout} theme={theme} />}
-      {toast && <Toast toast={toast} layout={layout} theme={theme} />}
+      {toast && <Toast toast={toast} actions={actions} layout={layout} theme={theme} safeRight={pageSafeRight} />}
       {progress != null && (
         <Box
           style={{
             position: "absolute",
-            inset: { top: layout.page.y - 1, left: layout.page.x - 1 },
-            width: Math.round(Math.min(1, progress) * (layout.page.width + 2)),
+            inset: { top: layout.page.y - layout.frame, left: layout.page.x - layout.frame },
+            width: Math.round(Math.min(1, progress) * (layout.page.width + layout.frame * 2)),
             height: Math.max(2, Math.round(layout.rem * 0.12)),
             overflow: "hidden",
           }}
         >
           <Box
             style={{
-              width: layout.page.width + 2,
+              width: layout.page.width + layout.frame * 2,
               height: Math.round(layout.rem * 2),
               flexShrink: 0,
-              cornerRadius: layout.rem * 0.55,
+              cornerRadius: layout.radius + layout.frame,
               border: {
                 width: Math.max(2, Math.round(layout.rem * 0.12)),
                 color: theme.accent,
@@ -190,6 +206,7 @@ export function Chrome({
       {settings && (
         <SettingsCard view={settings} actions={actions.settings} layout={layout} theme={theme} />
       )}
+      {clearData && <ClearDataDialog view={clearData} actions={actions} layout={layout} theme={theme} />}
     </Box>
   );
 }
@@ -271,6 +288,7 @@ function Toolbar({
   record,
   profiling,
   grabActive,
+  safeRight,
 }: {
   state: WebViewState;
   actions: ChromeActions;
@@ -280,6 +298,7 @@ function Toolbar({
   record: RecordView | null;
   profiling: boolean;
   grabActive: boolean;
+  safeRight: number;
 }) {
   const rem = layout.rem;
   const stopIcon = useStopIcon(state.loading);
@@ -291,7 +310,8 @@ function Toolbar({
     rem * 3.5 -
     (nav ? rem * 3.5 : 0) -
     (record ? rem * 7.25 : 0) -
-    (profiling ? rem * 6.5 : 0);
+    (profiling ? rem * 6.5 : 0) -
+    safeRight;
   return (
     <Box
       style={{
@@ -299,7 +319,7 @@ function Toolbar({
         flexShrink: 0,
         alignItems: "center",
         gap: rem * 0.25,
-        padding: { left: rem * 0.4, right: rem * 0.4 },
+        padding: { left: rem * 0.4, right: rem * 0.4 + safeRight },
       }}
     >
       {(state.canGoBack || state.canGoForward) && (
@@ -337,6 +357,7 @@ function Toolbar({
       />
       <ToolbarButton
         icon="select"
+        iconSize={rem * 0.95}
         enabled
         active={grabActive}
         rem={rem}
@@ -413,7 +434,7 @@ function AgentGlow({
     Math.max(12, Math.round(layout.rem * 1.6)),
     Math.floor(Math.min(page.width, page.height) / 2),
   );
-  const base = seamRadius(Math.max(2, layout.rem * 0.55 - 1), dock, "page");
+  const base = seamRadius(layout.radius, dock, "page");
   const r =
     typeof base === "number"
       ? { topLeft: base, topRight: base, bottomRight: base, bottomLeft: base }
@@ -504,17 +525,19 @@ function BrowserTabContents({
   coveredByReview: boolean;
 }) {
   const dock = layout.devtools?.dock ?? null;
+  const frame = layout.frame;
+  const pageRadius = layout.radius;
   return (
     <>
-      {!coveredByReview && (
+      {!coveredByReview && frame > 0 && (
         <Box
           style={{
             position: "absolute",
-            inset: { top: layout.page.y - 1, left: layout.page.x - 1 },
-            width: layout.page.width + 2,
-            height: layout.page.height + 2,
-            cornerRadius: seamRadius(layout.rem * 0.55, dock, "page"),
-            border: { width: 1, color: agentActive ? theme.accent : theme.frame },
+            inset: { top: layout.page.y - frame, left: layout.page.x - frame },
+            width: layout.page.width + frame * 2,
+            height: layout.page.height + frame * 2,
+            cornerRadius: seamRadius(pageRadius + frame, dock, "page"),
+            border: { width: frame, color: agentActive ? theme.accent : theme.frame },
           }}
         />
       )}
@@ -530,12 +553,13 @@ function BrowserTabContents({
           proxy={tab.proxy ?? undefined}
           preload={tab.preload ?? undefined}
           clipboardRead={tab.clipboardRead}
+          browserWindowOptions={tab.transparent ? TRANSPARENT_WINDOW : undefined}
           style={{
             position: "absolute",
             inset: { top: layout.page.y, left: layout.page.x },
             width: layout.page.width,
             height: layout.page.height,
-            cornerRadius: seamRadius(Math.max(2, layout.rem * 0.55 - 1), dock, "page"),
+            cornerRadius: seamRadius(pageRadius, dock, "page"),
             background: theme.bg,
           }}
           onChange={(state) => tabActions.state(tab.id, state)}
@@ -543,11 +567,15 @@ function BrowserTabContents({
           onContextMenu={(params) => tabActions.contextMenu(tab.id, params)}
           onDownload={(progress) => tabActions.download(progress)}
           onPointer={(event) => tabActions.pointer(tab.id, event)}
+          onPermissionRequest={(request) => tabActions.permissionRequest(tab.id, request)}
+          onPermissionCheck={(check) => tabActions.permissionCheck(check)}
         />
       ))}
     </>
   );
 }
+
+const TRANSPARENT_WINDOW = { transparent: true, backgroundColor: "#00000000" };
 
 const DIVIDER_ACTIVE = [58, 96, 168, 255] as const;
 const DIVIDER_GRIP = [118, 122, 132, 255] as const;
@@ -568,6 +596,8 @@ function DevtoolsPane({
   dividerEngaged: boolean;
 }) {
   const rect = layout.devtools!;
+  const frame = layout.frame;
+  const pageRadius = layout.radius;
   const horizontal = rect.dock === "bottom";
   const grab = Math.max(8, Math.round(layout.rem * 0.5));
   const divider = horizontal
@@ -582,11 +612,11 @@ function DevtoolsPane({
       <Box
         style={{
           position: "absolute",
-          inset: { top: rect.y - 1, left: rect.x - 1 },
-          width: rect.width + 2,
-          height: rect.height + 2,
-          cornerRadius: seamRadius(layout.rem * 0.55, rect.dock, "devtools"),
-          border: { width: 1, color: theme.frame },
+          inset: { top: rect.y - frame, left: rect.x - frame },
+          width: rect.width + frame * 2,
+          height: rect.height + frame * 2,
+          cornerRadius: seamRadius(pageRadius + frame, rect.dock, "devtools"),
+          border: { width: frame, color: theme.frame },
         }}
       />
       {target && (
@@ -600,7 +630,7 @@ function DevtoolsPane({
             inset: { top: rect.y, left: rect.x },
             width: rect.width,
             height: rect.height,
-            cornerRadius: seamRadius(Math.max(2, layout.rem * 0.55 - 1), rect.dock, "devtools"),
+            cornerRadius: seamRadius(pageRadius, rect.dock, "devtools"),
             background: theme.bg,
           }}
         />
@@ -614,6 +644,7 @@ function DevtoolsPane({
           height: divider.height,
           background: dividerEngaged ? [...DIVIDER_ACTIVE] : undefined,
           cornerRadius: 2,
+          pointerShape: horizontal ? "ns-resize" : "ew-resize",
         }}
         onDrag={actions.devtoolsDividerDrag}
         onMouseEnter={() => actions.devtoolsDividerHover(true)}
@@ -641,6 +672,7 @@ const GRAB_ACTIVE: Rgba = [0xb3, 0x45, 0xa0, 255];
 
 function ToolbarButton({
   icon,
+  iconSize,
   enabled,
   active = false,
   rem,
@@ -648,6 +680,7 @@ function ToolbarButton({
   onClick,
 }: {
   icon: IconName;
+  iconSize?: number;
   enabled: boolean;
   active?: boolean;
   rem: number;
@@ -669,7 +702,7 @@ function ToolbarButton({
       }}
       onClick={enabled ? onClick : undefined}
     >
-      <Icon icon={icon} size={rem * 1.1} color={color} />
+      <Icon icon={icon} size={iconSize ?? rem * 1.1} color={color} />
     </Box>
   );
 }

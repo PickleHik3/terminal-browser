@@ -52,8 +52,7 @@ for (const content of hostile) {
     assert.equal(CONTROL.test(out), false, "no control bytes");
     assert.equal(LINE_BREAKS.test(out), false, "no line breaks of any kind");
     const literal = unquote(out);
-    assert.ok(literal.startsWith("> "), "the literal is the quoted line");
-    assert.equal(literal.slice(2), literal.slice(2).trimEnd(), "no trailing whitespace to hide a newline");
+    assert.equal(literal, literal.trim(), "no surrounding whitespace to hide a newline");
     const pasted = chatMessage(content, agent);
     assert.ok(pasted.endsWith("\n\n"), "exactly the two trailing blank lines");
     assert.equal(literal, pasted.slice(0, -2), "same text an agent would get");
@@ -61,8 +60,8 @@ for (const content of hostile) {
 }
 
 test("shell metacharacters and quotes stay literal text", () => {
-  assert.equal(chatMessage("a; touch /tmp/x | sh", shell), "'> a; touch /tmp/x | sh'");
-  assert.equal(chatMessage("it's \\ here", shell), "'> it'\\''s '\\\\' here'");
+  assert.equal(chatMessage("a; touch /tmp/x | sh", shell), "'a; touch /tmp/x | sh'");
+  assert.equal(chatMessage("it's \\ here", shell), "'it'\\''s '\\\\' here'");
 });
 
 test("fuzz: random code points never yield control bytes or line breaks", () => {

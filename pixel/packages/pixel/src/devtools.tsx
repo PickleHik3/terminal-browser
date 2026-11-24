@@ -1,10 +1,10 @@
-import { useContext, useEffect, useLayoutEffect, useRef } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
 import type { Rect } from "./devtools-layout";
 import { useNodeRect } from "./layout";
 import { Box } from "./react";
-import type { DragEvent, NodeHandle, PointerEvent, Style, Surface, WheelEvent } from "./react";
+import type { DragEvent, NodeHandle, PointerEvent, PointerShape, Style, Surface, WheelEvent } from "./react";
 import { RootContext, handleEntries } from "./registry";
 import type { ViewEntry } from "./registry";
 import type { Theme } from "./theme";
@@ -23,11 +23,10 @@ export function DevtoolsDockPane({
   theme,
   surface,
   dividerEngaged,
+  pointerShape,
   onPointer,
   onWheel,
-  onHover,
   onDividerDrag,
-  onDividerHover,
 }: {
   rect: Rect;
   dock: DevtoolsDock;
@@ -35,11 +34,10 @@ export function DevtoolsDockPane({
   theme: Theme;
   surface: Surface;
   dividerEngaged: boolean;
+  pointerShape: PointerShape;
   onPointer(event: PointerEvent): void;
   onWheel(event: WheelEvent): void;
-  onHover(hovering: boolean): void;
   onDividerDrag(event: DragEvent): void;
-  onDividerHover(hovering: boolean): void;
 }) {
   const horizontal = dock === "bottom";
   const grab = Math.max(8, Math.round(rem * 0.5));
@@ -60,11 +58,10 @@ export function DevtoolsDockPane({
           width: rect.width,
           height: rect.height,
           background: theme.bg,
+          pointerShape,
         }}
         onPointer={onPointer}
         onWheel={onWheel}
-        onMouseEnter={() => onHover(true)}
-        onMouseLeave={() => onHover(false)}
       />
       <Box
         style={{
@@ -74,10 +71,9 @@ export function DevtoolsDockPane({
           height: divider.height,
           background: dividerEngaged ? [...DIVIDER_ACTIVE] : undefined,
           cornerRadius: 2,
+          pointerShape: horizontal ? "ns-resize" : "ew-resize",
         }}
         onDrag={onDividerDrag}
-        onMouseEnter={() => onDividerHover(true)}
-        onMouseLeave={() => onDividerHover(false)}
       >
         {[-7, 0, 7].map((offset) => (
           <Box
@@ -122,6 +118,7 @@ export function DevTools({ target, style, dock = "right", panel, onAction, keepF
   const rect = useNodeRect(boxRef, registry);
   const surface = useRef<Surface | null>(null);
   const opened = useRef<ViewEntry | null>(null);
+  const [pointerShape, setPointerShape] = useState<PointerShape>("default");
   const scale = registry.displayScale;
 
   useLayoutEffect(() => {
@@ -131,6 +128,7 @@ export function DevTools({ target, style, dock = "right", panel, onAction, keepF
       if (entry?.externalDevtools) {
         entry.externalDevtools = false;
         entry.externalDevtoolsAction = null;
+        entry.externalDevtoolsCursor = null;
         entry.host?.closeDevtools();
       }
       opened.current = null;
@@ -150,8 +148,13 @@ export function DevTools({ target, style, dock = "right", panel, onAction, keepF
       opened.current.externalDevtools = false;
       opened.current.host?.closeDevtools();
     }
+    if (opened.current !== entry) {
+      if (opened.current) opened.current.externalDevtoolsCursor = null;
+      setPointerShape(host.devtools?.cursorShape ?? "default");
+    }
     opened.current = entry;
     entry.externalDevtoolsAction = (action) => onAction?.(action);
+    entry.externalDevtoolsCursor = setPointerShape;
     if (!host.devtools) {
       entry.externalDevtools = true;
       host.openDevtools(surface.current, layout, dock);
@@ -181,6 +184,7 @@ export function DevTools({ target, style, dock = "right", panel, onAction, keepF
             width: size.width,
             height: size.height,
             cornerRadius: style?.cornerRadius,
+            pointerShape,
           }}
           onPointer={(event) => {
             const host = entry?.host;
@@ -194,10 +198,6 @@ export function DevTools({ target, style, dock = "right", panel, onAction, keepF
             registry.focus(entry, "devtools");
             host.devtools.input.wheel(event);
           }}
-          onMouseEnter={() =>
-            registry.setPointerShape(entry?.host?.devtools?.cursorShape ?? "default")
-          }
-          onMouseLeave={() => registry.setPointerShape("default")}
         />
       )}
     </Box>

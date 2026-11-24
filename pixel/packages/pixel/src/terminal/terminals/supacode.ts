@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-import { paneById, shellQuote } from "../shared";
+import { paneById, PASTE_KEY, shellQuote } from "../shared";
 import type { Detect, Pane, PaneDetails } from "../terminal";
 
 const BUNDLED_CLI = "/Applications/supacode.app/Contents/Resources/bin/supacode";
@@ -55,6 +55,10 @@ export const supacode: Detect = (env, run) => {
     async sendText(pane, text) {
       const { worktree, tab } = await home(pane);
       await supacode(["surface", "focus", "-w", worktree, "-t", tab, "-s", pane, "--input", text, "--timeout", "5"]);
+    },
+    async pasteKey(pane) {
+      const { worktree, tab } = await home(pane);
+      await supacode(["surface", "focus", "-w", worktree, "-t", tab, "-s", pane, "--input", PASTE_KEY, "--timeout", "5"]);
     },
     async focusPane(pane) {
       const { worktree, tab } = await home(pane);

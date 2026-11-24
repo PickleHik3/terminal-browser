@@ -1,4 +1,4 @@
-import { adjacentPane, paneById } from "../shared";
+import { adjacentPane, paneById, PASTE_KEY } from "../shared";
 import type { Detect, Pane, PaneDetails } from "../terminal";
 
 interface WeztermPane {
@@ -60,6 +60,9 @@ export const wezterm: Detect = (env, run) => {
     neighbor,
     async sendText(pane, text) {
       await wezterm(["cli", "send-text", "--pane-id", pane], text);
+    },
+    async pasteKey(pane) {
+      await wezterm(["cli", "send-text", "--no-paste", "--pane-id", pane], PASTE_KEY);
     },
     async focusPane(pane) {
       await wezterm(["cli", "activate-pane", "--pane-id", pane]);

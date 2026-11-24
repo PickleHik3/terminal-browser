@@ -85,8 +85,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             platform: darwin-arm64
+            macos-target: "11.0"
           - os: macos-15-intel
             platform: darwin-x64
           - os: ubuntu-latest
@@ -109,8 +110,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: pixel/engine
+      - if: matrix.macos-target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos-target }}" >> "$GITHUB_ENV"
       - run: node scripts/build-native.mjs --release
         working-directory: pixel/packages/pixel
+      - if: matrix.macos-target
+        run: vtool -show-build pixel/packages/native/${{ matrix.platform }}/pixel.node | grep -qE "minos ${{ matrix.macos-target }}$"
       - if: matrix.container
         run: objdump -T pixel/packages/native/${{ matrix.platform }}/pixel.node | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1 | grep -qx GLIBC_2.28
       - uses: actions/upload-artifact@v4
@@ -155,7 +160,7 @@ jobs:
       - name: Stamp versions from the tag
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          for pkg in pixel/packages/native/* pixel/packages/pixel; do
+          for pkg in pixel/packages/native/* pixel/packages/pixel pixel/packages/create-pixel; do
             (cd "$pkg" && npm version "$VERSION" --no-git-tag-version --allow-same-version)
           done
           node -e '
@@ -167,10 +172,18 @@ jobs:
           ' "$VERSION"
       - name: Publish
         run: |
-          for pkg in pixel/packages/native/*; do
-            (cd "$pkg" && npm publish --access public --provenance)
-          done
-          (cd pixel/packages/pixel && npm publish --access public --provenance)
+          VERSION="${{ needs.prepare.outputs.version }}"
+          status() {
+            curl -s -o /dev/null -w "%{http_code}" "https://registry.npmjs.org/$(node -p "require('./$1/package.json').name.replace('/', '%2f')")/$VERSION"
+          }
+          # Skip versions that are already on npm, so a partly finished release can be re-run.
+          publish() {
+            if [ "$(status "$1")" = 200 ]; then echo "$1 $VERSION is already published"; return 0; fi
+            (cd "$1" && npm publish --access public --provenance)
+          }
+          for pkg in pixel/packages/native/*; do publish "$pkg"; done
+          publish pixel/packages/pixel
+          publish pixel/packages/create-pixel
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

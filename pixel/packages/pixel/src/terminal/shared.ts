@@ -95,6 +95,8 @@ export function shellLiteral(text: string): string {
   return `'${text.replace(/['\\]/g, (char) => (char === "'" ? "'\\''" : "'\\\\'"))}'`;
 }
 
+export const PASTE_KEY = "\x16";
+
 export function bracketedPaste(text: string): string {
   if (!text.includes("\n")) return text;
   return `\x1b[200~${text.replaceAll("\x1b[201~", "")}\x1b[201~`;

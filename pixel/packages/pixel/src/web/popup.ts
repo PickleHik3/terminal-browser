@@ -1,6 +1,6 @@
 import { nativeImage } from "electron";
 import type { BrowserWindow } from "electron";
-import type { Surface } from "../react";
+import type { PointerShape, Surface } from "../react";
 import { currentDeviceEmulation, emulateMobile } from "./browser-session";
 import { cursorShapeFor } from "./cursor";
 import { PageInput } from "./input";
@@ -17,7 +17,7 @@ export interface PopupState {
 
 export class PopupWindow {
   readonly input: PageInput;
-  cursorShape = "default";
+  cursorShape: PointerShape = "default";
   onCursorChange: (() => void) | null = null;
   private readonly window: BrowserWindow;
   private readonly surface: Surface;

@@ -15,6 +15,14 @@ export const COMMANDS = {
   "settings.open": { label: "Settings", keys: shared(["ctrl+,"]) },
   "tab.new": { label: "New tab", keys: platform(["cmd+t", "ctrl+t"], ["ctrl+t"]) },
   "tab.close": { label: "Close tab", keys: platform(["cmd+w"], ["ctrl+w"]) },
+  "tab.next": {
+    label: "Next tab",
+    keys: platform(["ctrl+tab", "cmd+alt+right"], ["ctrl+tab", "ctrl+pagedown"]),
+  },
+  "tab.previous": {
+    label: "Previous tab",
+    keys: platform(["ctrl+shift+tab", "cmd+alt+left"], ["ctrl+shift+tab", "ctrl+pageup"]),
+  },
   "url.edit": { label: "Edit URL", keys: platform(["cmd+l"], ["ctrl+l"]) },
   find: { label: "Find in page", keys: platform(["cmd+shift+f"], ["ctrl+shift+f"]) },
   "page.reload": { label: "Reload page", keys: platform(["cmd+r"], ["ctrl+r"]) },

@@ -32,6 +32,11 @@
         "tty7 split %3 --vertical --ratio 0.6 --json",
         "tty7 send %11 terminal-browser open --enter"
       ]
+    },
+    "pasteKey": {
+      "commands": [
+        "tty7 send %3 \u0016"
+      ]
     }
   }
 }

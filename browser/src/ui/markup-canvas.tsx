@@ -95,17 +95,17 @@ export function MarkupCanvas({
           inset: { top: view.frame.y, left: view.frame.x },
           width: Math.max(1, view.frame.width),
           height: Math.max(1, view.frame.height),
-          cornerRadius: Math.max(2, layout.rem * 0.55 - 1),
+          cornerRadius: layout.radius,
         }}
       />
       <Box
         style={{
           position: "absolute",
-          inset: { top: view.frame.y - 1, left: view.frame.x - 1 },
-          width: Math.max(1, view.frame.width) + 2,
-          height: Math.max(1, view.frame.height) + 2,
-          cornerRadius: layout.rem * 0.55,
-          border: { width: 1, color: theme.fieldBorder },
+          inset: { top: view.frame.y - layout.frame, left: view.frame.x - layout.frame },
+          width: Math.max(1, view.frame.width) + layout.frame * 2,
+          height: Math.max(1, view.frame.height) + layout.frame * 2,
+          cornerRadius: layout.radius + layout.frame,
+          border: { width: layout.frame, color: theme.fieldBorder },
         }}
       />
       {view.objects.map((object) => (

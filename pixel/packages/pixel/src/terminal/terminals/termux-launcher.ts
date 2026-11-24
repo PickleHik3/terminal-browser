@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { adjacentPane, bracketedPaste } from "../shared";
+import { adjacentPane, bracketedPaste, PASTE_KEY } from "../shared";
 import type { PaneRect } from "../shared";
 import type { Detect, Direction, Pane, PaneDetails, Terminal } from "../terminal";
 
@@ -338,6 +338,9 @@ export function launcherTerminal({
     },
     async sendText(pane, text) {
       await call("POST", `/v1/panes/${encodeURIComponent(pane)}/write`, { text: bracketedPaste(text) });
+    },
+    async pasteKey(pane) {
+      await call("POST", `/v1/panes/${encodeURIComponent(pane)}/write`, { text: PASTE_KEY });
     },
     async focusPane(pane) {
       await call("POST", `/v1/panes/${encodeURIComponent(pane)}/focus`, {});

@@ -96,7 +96,9 @@ export interface BoxProps {
   hidden?: boolean;
   onClick?: (event: ClickEvent) => void;
   onClickOutside?: (event: ClickEvent) => void;
+  modal?: boolean;
   onScroll?: (event: ScrollEvent) => void;
+  onStick?: (stuck: boolean) => void;
   onWheel?: (event: WheelEvent) => void;
   onPointer?: (event: PointerEvent) => void;
   onTouch?: (event: TouchEvent) => void;
@@ -124,6 +126,7 @@ export interface PathProps {
   d: string;
   stroke: ShapeStroke;
   viewBox?: number;
+  glyph?: string;
   onClick?: (event: ClickEvent) => void;
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
@@ -139,6 +142,7 @@ export interface TextSpan {
   italic?: boolean;
   underline?: boolean;
   strikethrough?: boolean;
+  link?: string;
 }
 
 export interface TextProps {
@@ -185,6 +189,8 @@ export interface ChangeInfo extends CaretInfo {
   marks: MarkRef[];
 }
 
+export type CaretShape = "bar" | "block" | "underscore";
+
 export interface InputGutter {
   color: Color;
   activeColor: Color;
@@ -199,6 +205,7 @@ export interface InputProps {
   renderMark?: (id: number) => React.ReactNode;
   serializeMark?: (id: number) => string | undefined;
   caretColor?: Style["color"];
+  caretShape?: CaretShape;
   selectionColor?: Style["color"];
   autoFocus?: boolean;
   spans?: TextSpan[];
@@ -228,6 +235,7 @@ export interface ImageProps {
   style?: Style;
   id?: string;
   src: string;
+  glyph?: string;
   onClick?: (event: ClickEvent) => void;
   placeholder?: React.ReactNode;
   error?: React.ReactNode;
@@ -284,8 +292,8 @@ export class Bridge {
   private nextId = 1;
   private seq = 0;
 
-  constructor(tty?: string, wrapper?: string, sessionEnv?: NodeJS.ProcessEnv, host?: HostOptions) {
-    this.engine = createNativeEngine(tty, wrapper, sessionEnv, host);
+  constructor(engine: NativeEngine) {
+    this.engine = engine;
     if (!defaultBridge) defaultBridge = this;
   }
 
@@ -317,7 +325,7 @@ export class Bridge {
 let defaultBridge: Bridge | null = null;
 
 export function getBridge(wrapper?: string): Bridge {
-  if (!defaultBridge) defaultBridge = new Bridge(undefined, wrapper);
+  if (!defaultBridge) defaultBridge = new Bridge(createNativeEngine(undefined, wrapper));
   return defaultBridge;
 }
 
@@ -354,11 +362,13 @@ function serializeProps(
     hidden: hidden || !!props.hidden,
     contentHeight: props.contentHeight,
     scrollEvents: !!props.onScroll,
+    stickEvents: !!props.onStick,
     wheelEvents: !!props.onWheel,
     pointerEvents: !!props.onPointer,
     touchEvents: !!props.onTouch,
     hoverEvents: !!(props.onMouseEnter || props.onMouseLeave),
     outsideClickEvents: !!props.onClickOutside,
+    modal: !!props.modal,
     dragEvents: !!props.onDrag,
     selectionEvents: !!props.onSelection,
     moveEvents: !!props.onMouseMove,
@@ -376,12 +386,14 @@ function serializeProps(
       italic: s.italic,
       underline: s.underline,
       strikethrough: s.strikethrough,
+      link: s.link,
     }));
   }
   if (type === "shape-path" && props.stroke) {
     base.shape = {
       d: props.d ?? "",
       viewBox: props.viewBox,
+      glyph: props.glyph,
       stroke: {
         width: props.stroke.width,
         color: parseColor(props.stroke.color),
@@ -399,6 +411,7 @@ function serializeProps(
     base.image = {
       src: props.src ?? "",
       confirmedEqualTo: props.advanced?.confirmedEqualTo,
+      glyph: props.glyph,
     };
   } else if (type === "input") {
     const valueChanged = !prevProps || props.value !== prevProps.value;
@@ -407,6 +420,7 @@ function serializeProps(
       value: valueChanged ? props.value : undefined,
       marks: props.defaultMarks,
       caretColor: parseColor(props.caretColor),
+      caretShape: props.caretShape,
       selectionColor: parseColor(props.selectionColor),
       autoFocus: !!props.autoFocus,
       submit: !!props.onSubmit,
@@ -652,17 +666,22 @@ const hostConfig = {
       blur: () => {
         if (type !== "input") return;
         const b = instance.bridge;
-        b.push(instance.view, { op: "focus", id: null });
+        b.push(instance.view, { op: "blur", id: instance.id });
         b.flush();
       },
-      scrollTo: (offset: number, smooth = false) => {
+      scrollTo: (offset: number, smooth = false, reveal = false) => {
         const b = instance.bridge;
-        b.push(instance.view, { op: "scrollTo", id: instance.id, offset, smooth });
+        b.push(instance.view, { op: "scrollTo", id: instance.id, offset, smooth, reveal });
         b.flush();
       },
-      scrollIntoView: (smooth = false) => {
+      scrollBy: (delta: number, reveal = false) => {
         const b = instance.bridge;
-        b.push(instance.view, { op: "scrollIntoView", id: instance.id, smooth });
+        b.push(instance.view, { op: "scrollBy", id: instance.id, delta, reveal });
+        b.flush();
+      },
+      scrollIntoView: (smooth = false, reveal = false) => {
+        const b = instance.bridge;
+        b.push(instance.view, { op: "scrollIntoView", id: instance.id, smooth, reveal });
         b.flush();
       },
       splice: (start: number, end: number, text: string) => {

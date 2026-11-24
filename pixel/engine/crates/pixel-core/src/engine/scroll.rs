@@ -1,12 +1,9 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use super::hover::Verdict;
 use super::{Engine, EngineEvent};
-use crate::logging;
-use crate::terminal::Mods;
+use crate::input::Mods;
 use crate::tree::NodeId;
 
-const PINCH_HOVER_WINDOW: Duration = Duration::from_millis(2000);
 const PINCH_WHEEL_SCALE: f32 = 100.0;
 
 impl Engine {
@@ -17,13 +14,24 @@ impl Engine {
                 .iter()
                 .any(|&id| tree.scroll_state(id).is_some_and(|s| !s.settled()))
         });
-        scrolling || self.bars_animating() || self.term.highlight_active()
+        scrolling || self.bars_animating() || self.backend.animating() || self.backend.pending_present()
+    }
+
+    pub(super) fn moving(&self) -> bool {
+        self.comp.active_views().into_iter().any(|view| {
+            let tree = &self.comp.views[view].tree;
+            tree.scroll_nodes().iter().any(|&id| {
+                let fading = tree.bar_opacity(id) > 0.0 && tree.bar_opacity(id) < 1.0;
+                fading || tree.scroll_state(id).is_some_and(|s| !s.settled())
+            })
+        }) || self.backend.animating()
     }
 
     pub(super) fn bar_at(&self, view: usize, point: (f32, f32)) -> Option<NodeId> {
         let tree = &self.comp.views[view].tree;
         tree.scroll_nodes().into_iter().rev().find(|&id| {
-            tree.bar_opacity(id) > 0.1
+            !tree.inert(id)
+                && tree.bar_opacity(id) > 0.1
                 && tree
                     .scrollbar_rects(id)
                     .is_some_and(|r| r.zone.contains(point.0, point.1))
@@ -92,7 +100,46 @@ impl Engine {
         })
     }
 
+    pub(super) fn rows_pending(&self) -> bool {
+        self.comp.active_views().into_iter().any(|view| self.comp.views[view].tree.rows_pending())
+    }
+
+    pub(super) fn catch_up_rows(&mut self, busy: bool) {
+        let until = if busy {
+            self.frame_slot + self.frame_interval().saturating_sub(super::ROW_CATCH_UP_MARGIN)
+        } else {
+            Instant::now() + super::ROW_CATCH_UP_BUDGET
+        };
+        if until <= Instant::now() {
+            return;
+        }
+        for view in self.comp.active_views() {
+            let tree = &mut self.comp.views[view].tree;
+            if tree.rows_pending() {
+                tree.catch_up_rows(&self.fonts, until);
+            }
+        }
+    }
+
+    pub(super) fn give_spare_time(&mut self, busy: bool) {
+        let until = if busy {
+            self.frame_slot + self.frame_interval().saturating_sub(super::ROW_CATCH_UP_MARGIN)
+        } else {
+            Instant::now() + super::ROW_CATCH_UP_BUDGET
+        };
+        if until > Instant::now() {
+            self.backend.spare(&self.fonts, until);
+        }
+    }
+
     pub(super) fn emit_scroll_events(&mut self, out: &mut Vec<EngineEvent>) {
+        for view in self.comp.active_views() {
+            let tree = &mut self.comp.views[view].tree;
+            for (node, stuck) in tree.take_stick_changes() {
+                let key = tree.key_of(node).map(str::to_string);
+                out.push(EngineEvent::Stick { view, node, key, stuck });
+            }
+        }
         for view in self.comp.active_views() {
             for id in self.comp.views[view].tree.scroll_nodes() {
                 let tree = &mut self.comp.views[view].tree;
@@ -110,146 +157,74 @@ impl Engine {
         }
     }
 
-    pub fn scroll_into_view(&mut self, view: usize, id: NodeId, smooth: bool) {
-        if view >= self.comp.views.len() {
-            return;
-        }
-        let fonts = &self.fonts;
-        let base_px = self.base_px;
-        self.comp.views[view].tree.flush_layout(fonts, base_px);
-        let tree = &self.comp.views[view].tree;
-        let Some(child) = tree.rect(id) else {
-            return;
-        };
-        let mut current = tree.parent(id);
-        while let Some(ancestor) = current {
-            current = tree.parent(ancestor);
-            let (Some(rect), Some(scroll)) = (tree.rect(ancestor), tree.scroll_state(ancestor))
-            else {
-                continue;
-            };
-            if tree.scroll_max(ancestor) <= 0.0 {
+    pub fn scroll_into_view(&mut self, view: usize, id: NodeId, smooth: bool, reveal: bool) {
+        self.scroll_requests.push((view, ScrollRequest::IntoView(id), smooth, reveal));
+    }
+
+    pub fn scroll_to(&mut self, view: usize, id: NodeId, offset: f32, smooth: bool, reveal: bool) {
+        self.scroll_requests.push((view, ScrollRequest::To(id, offset), smooth, reveal));
+    }
+
+    pub fn scroll_by(&mut self, view: usize, id: NodeId, delta: f32, reveal: bool) {
+        self.scroll_requests.push((view, ScrollRequest::By(id, delta), false, reveal));
+    }
+
+    pub(super) fn apply_scroll_requests(&mut self) {
+        for (view, request, smooth, reveal) in std::mem::take(&mut self.scroll_requests) {
+            if view >= self.comp.views.len() {
                 continue;
             }
-            let offset = scroll.position + child.y - rect.y - base_px * 0.5;
-            self.scroll_to(view, ancestor, offset, smooth);
-            return;
-        }
-    }
-
-    pub fn scroll_to(&mut self, view: usize, id: NodeId, offset: f32, smooth: bool) {
-        if view >= self.comp.views.len() {
-            return;
-        }
-        let fonts = &self.fonts;
-        let base_px = self.base_px;
-        let tree = &mut self.comp.views[view].tree;
-        tree.flush_layout(fonts, base_px);
-        let max = tree.scroll_max(id);
-        let offset = offset.clamp(0.0, max);
-        if let Some(state) = tree.scroll_state_mut(id) {
-            if smooth {
-                state.set_target(offset);
-            } else {
-                state.position = offset;
-                state.set_target(offset);
-                tree.mark_place();
+            let fonts = &mut self.fonts;
+            let base_px = self.base_px;
+            let tree = &mut self.comp.views[view].tree;
+            tree.flush_layout(fonts, base_px);
+            match request {
+                ScrollRequest::IntoView(id) => {
+                    if let Some((ancestor, y)) = scroll_ancestor_offset(tree, id) {
+                        set_scroll(tree, ancestor, y - base_px * 0.5, smooth, reveal);
+                    }
+                }
+                ScrollRequest::To(id, offset) => set_scroll(tree, id, offset, smooth, reveal),
+                ScrollRequest::By(id, delta) => scroll_by(tree, id, delta, reveal),
             }
-            tree.touch_bar(id);
         }
     }
 
-    fn pane_extent(&self) -> ((f32, f32), (f32, f32)) {
-        (
-            (self.comp.window.0 as f32, self.comp.window.1 as f32),
-            (self.cell.0 as f32, self.cell.1 as f32),
-        )
-    }
-
-    pub(super) fn ingest_native(&mut self) {
-        let Some(native) = &mut self.native else {
-            return;
-        };
-        let events = native.drain();
-        let scale = native.scale;
-        if native.dead() {
-            logging::warn(
-                "engine",
-                "native scroll helper exited; falling back to wheel ticks",
-            );
-            self.native = None;
-            self.pairing.reset();
-            self.hover_oracle.invalidate();
-            return;
-        }
-        if !self.use_native {
-            return;
-        }
-        let now = Instant::now();
-        let (pane, pad) = self.pane_extent();
-        self.pairing
-            .ingest(events, scale, now, &mut self.hover_oracle, pane, pad);
-        let wants_cursor = self.pixel_mouse && self.hover_oracle.wants_cursor(now);
-        if let Some(native) = &mut self.native {
-            native.request_positions(wants_cursor);
-        }
-    }
-
-    pub(super) fn drain_native(&mut self, out: &mut Vec<EngineEvent>) {
-        self.ingest_native();
-        let (zoom, scrolls) = self.pairing.take();
-        let (pane, pad) = self.pane_extent();
-        let pinch_here = match self.hover_oracle.verdict(Instant::now(), pane, pad) {
-            Verdict::Deliver => true,
-            Verdict::Discard => false,
-            Verdict::Unknown => self
-                .last_pointer_activity
-                .is_some_and(|at| at.elapsed() < PINCH_HOVER_WINDOW),
-        };
-        let magnification = zoom - 1.0;
-        if (magnification == 0.0 || !pinch_here) && scrolls.is_empty() {
-            return;
-        }
-        let cursor = self.cursor.unwrap_or((
-            self.comp.window.0 as f32 / 2.0,
-            self.comp.window.1 as f32 / 2.0,
-        ));
-        let view = self.comp.view_at(cursor.0);
+    pub(super) fn pinch(&mut self, at: Option<(f32, f32)>, magnification: f32, out: &mut Vec<EngineEvent>) {
+        let point = self.pointer_or_center(at);
+        let view = self.comp.view_at(point.0);
         self.mark_scroll(view);
-        let local = self.comp.to_local(view, cursor);
-        if magnification != 0.0 && pinch_here {
-            self.emit_wheel(
-                view,
-                local,
-                0.0,
-                -magnification * PINCH_WHEEL_SCALE,
-                true,
-                Mods {
-                    ctrl: true,
-                    ..Mods::default()
-                },
-                out,
-            );
-        }
-        if scrolls.is_empty() {
+        let local = self.comp.to_local(view, point);
+        self.emit_wheel(
+            view,
+            local,
+            0.0,
+            -magnification * PINCH_WHEEL_SCALE,
+            true,
+            Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+            out,
+        );
+    }
+
+    pub(super) fn wheel_steps(
+        &mut self,
+        at: Option<(f32, f32)>,
+        steps: &[(f32, f32)],
+        mods: Mods,
+        out: &mut Vec<EngineEvent>,
+    ) {
+        if steps.is_empty() {
             return;
         }
-        if self.last_native_scroll.is_none() {
-            logging::info("engine", "native scroll delivering");
-        }
-        self.last_native_scroll = Some(Instant::now());
-        if self.comp.views[view]
-            .tree
-            .hit_wheel(local.0, local.1)
-            .is_some()
-        {
-            let mut delta_x = 0.0;
-            let mut delta_y = 0.0;
-            for (dx, dy) in &scrolls {
-                delta_x -= dx;
-                delta_y -= dy;
-            }
-            self.emit_wheel(view, local, delta_x, delta_y, true, Mods::default(), out);
+        let point = self.pointer_or_center(at);
+        let view = self.comp.view_at(point.0);
+        self.mark_scroll(view);
+        let local = self.comp.to_local(view, point);
+        let delta = steps.iter().fold((0.0, 0.0), |sum, step| (sum.0 + step.0, sum.1 + step.1));
+        if self.emit_wheel(view, local, delta.0, delta.1, true, mods, out) {
             return;
         }
         let Some(area) = self.comp.views[view].tree.scroll_area_at(local.0, local.1) else {
@@ -258,8 +233,8 @@ impl Engine {
         let (node, max) = (area.node, area.max_scroll());
         let mut moved = false;
         if let Some(state) = self.comp.views[view].tree.scroll_state_mut(node) {
-            for (_, dy) in scrolls {
-                let next = (state.position - dy).clamp(0.0, max);
+            for (_, dy) in steps {
+                let next = (state.position + dy).clamp(0.0, max);
                 if next != state.position {
                     state.position = next;
                     moved = true;
@@ -273,53 +248,158 @@ impl Engine {
         self.touch_bar(view, node);
     }
 
-    // A host delivered trackpad deltas it had already paired, so they go where
-    // paired native deltas go, without any pairing of our own.
-    pub(super) fn forwarded_wheel(
-        &mut self,
-        point: (f32, f32),
-        delta: (f32, f32),
-        mods: Mods,
-        out: &mut Vec<EngineEvent>,
-    ) {
-        let view = self.comp.view_at(point.0);
-        self.mark_scroll(view);
-        let local = self.comp.to_local(view, point);
-        if self.emit_wheel(view, local, delta.0, delta.1, true, mods, out) {
-            return;
-        }
-        let Some(area) = self.comp.views[view].tree.scroll_area_at(local.0, local.1) else {
-            return;
-        };
-        let (node, max) = (area.node, area.max_scroll());
-        let mut moved = false;
-        if let Some(state) = self.comp.views[view].tree.scroll_state_mut(node) {
-            let next = (state.position + delta.1).clamp(0.0, max);
-            if next != state.position {
-                state.position = next;
-                moved = true;
-            }
-            state.set_target(next);
-        }
-        if moved {
-            self.comp.views[view].tree.mark_place();
-        }
-        self.touch_bar(view, node);
+    fn pointer_or_center(&self, at: Option<(f32, f32)>) -> (f32, f32) {
+        at.or(self.cursor).unwrap_or((
+            self.comp.window.0 as f32 / 2.0,
+            self.comp.window.1 as f32 / 2.0,
+        ))
     }
 
     pub(super) fn step_scrolls(&mut self, dt: f32) {
-        let profile = self.profile;
+        let profile = self.profile.clone();
         for view in self.comp.active_views() {
             let tree = &mut self.comp.views[view].tree;
             for id in tree.scroll_nodes() {
                 let max = tree.scroll_max(id);
                 if let Some(state) = tree.scroll_state_mut(id)
-                    && state.step(profile, dt, max)
+                    && state.step(profile.as_ref(), dt, max)
                 {
+                    let reveal = state.reveal;
                     tree.mark_place();
-                    tree.touch_bar(id);
+                    if reveal {
+                        tree.touch_bar(id);
+                    }
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ScrollRequest {
+    IntoView(NodeId),
+    To(NodeId, f32),
+    By(NodeId, f32),
+}
+
+fn scroll_ancestor_offset(tree: &crate::tree::Tree, id: NodeId) -> Option<(NodeId, f32)> {
+    let mut current = tree.parent(id);
+    while let Some(ancestor) = current {
+        current = tree.parent(ancestor);
+        if tree.scroll_max(ancestor) > 0.0 {
+            return Some((ancestor, tree.content_y(id, ancestor)?));
+        }
+    }
+    None
+}
+
+fn scroll_by(tree: &mut crate::tree::Tree, id: NodeId, delta: f32, reveal: bool) {
+    if let Some(position) = tree.scroll_state(id).map(|state| state.position) {
+        set_scroll(tree, id, position + delta, false, reveal);
+    }
+}
+
+fn set_scroll(tree: &mut crate::tree::Tree, id: NodeId, offset: f32, smooth: bool, reveal: bool) {
+    let offset = offset.clamp(0.0, tree.scroll_max(id));
+    let view = tree.rect(id).map_or(0.0, |r| r.h);
+    if let Some(state) = tree.scroll_state_mut(id) {
+        let moves = state.position != offset || state.target != offset;
+        state.reveal = reveal;
+        if smooth {
+            if (offset - state.position).abs() > view {
+                state.position = offset - view.copysign(offset - state.position);
+                tree.mark_place();
+            }
+            let Some(state) = tree.scroll_state_mut(id) else { return };
+            state.set_target(offset);
+        } else {
+            state.position = offset;
+            state.set_target(offset);
+            tree.mark_place();
+        }
+        if reveal && moves {
+            tree.touch_bar(id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desc::Desc;
+    use crate::style::{Dimension, Layout, Overflow, Style};
+
+    #[test]
+    fn a_smooth_scroll_to_a_far_target_starts_a_viewport_away_from_it() {
+        let mut tree = crate::tree::Tree::new((40.0, 100.0));
+        let row = |i: usize| Desc { style: Style { height: Dimension::Px(20.0), ..Style::default() }, key: Some(format!("row{i}")), ..Desc::default() };
+        tree.reconcile(Desc {
+            children: vec![Desc {
+                style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+                key: Some("list".into()),
+                children: (0..100).map(row).collect(),
+                ..Desc::default()
+            }],
+            ..Desc::default()
+        });
+        let mut fonts = crate::fonts::FontRegistry::bundled();
+        tree.flush_layout(&mut fonts, 16.0);
+        let list = tree.find("list").unwrap();
+        set_scroll(&mut tree, list, 1900.0, true, false);
+        let state = tree.scroll_state(list).unwrap();
+        assert_eq!((state.position, state.target), (1800.0, 1900.0));
+        set_scroll(&mut tree, list, 1850.0, true, false);
+        assert_eq!(tree.scroll_state(list).unwrap().position, 1800.0, "near targets animate the whole way");
+    }
+
+    #[test]
+    fn scrolls_by_add_up_from_where_the_list_is() {
+        let mut tree = crate::tree::Tree::new((40.0, 100.0));
+        let row = |i: usize| Desc { style: Style { height: Dimension::Px(20.0), ..Style::default() }, key: Some(format!("row{i}")), ..Desc::default() };
+        tree.reconcile(Desc {
+            children: vec![Desc {
+                style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+                key: Some("list".into()),
+                children: (0..10).map(row).collect(),
+                ..Desc::default()
+            }],
+            ..Desc::default()
+        });
+        let mut fonts = crate::fonts::FontRegistry::bundled();
+        tree.flush_layout(&mut fonts, 16.0);
+        let list = tree.find("list").unwrap();
+        set_scroll(&mut tree, list, 30.0, false, false);
+        scroll_by(&mut tree, list, 25.0, false);
+        scroll_by(&mut tree, list, 25.0, false);
+        assert_eq!(tree.scroll_state(list).unwrap().position, 80.0);
+        scroll_by(&mut tree, list, 500.0, false);
+        assert_eq!(tree.scroll_state(list).unwrap().position, 100.0, "stops at the end");
+    }
+
+    #[test]
+    fn only_revealing_scrolls_that_move_show_the_bar() {
+        let mut tree = crate::tree::Tree::new((40.0, 100.0));
+        let row = |i: usize| Desc { style: Style { height: Dimension::Px(20.0), ..Style::default() }, key: Some(format!("row{i}")), ..Desc::default() };
+        tree.reconcile(Desc {
+            children: vec![Desc {
+                style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+                key: Some("list".into()),
+                children: (0..20).map(row).collect(),
+                ..Desc::default()
+            }],
+            ..Desc::default()
+        });
+        let mut fonts = crate::fonts::FontRegistry::bundled();
+        tree.flush_layout(&mut fonts, 16.0);
+        let list = tree.find("list").unwrap();
+        let shown = |tree: &crate::tree::Tree| tree.get(list).unwrap().bar.last_move.is_some();
+        set_scroll(&mut tree, list, 300.0, false, false);
+        scroll_by(&mut tree, list, -40.0, false);
+        set_scroll(&mut tree, list, 0.0, false, false);
+        assert!(!shown(&tree));
+        set_scroll(&mut tree, list, 0.0, false, true);
+        assert!(!shown(&tree), "a scroll that goes nowhere");
+        scroll_by(&mut tree, list, 60.0, true);
+        assert!(shown(&tree));
     }
 }

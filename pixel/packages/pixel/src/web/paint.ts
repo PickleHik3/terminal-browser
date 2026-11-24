@@ -26,7 +26,11 @@ function presentTexture(
     const { ioSurface } = info.handle;
     if (!ioSurface) return false;
     if (paintedNothing(info) && !wholeSurface) return false;
-    surface.present({ ioSurface, damage: wholeSurface ? undefined : damageOf(info) });
+    surface.present({
+      ioSurface,
+      damage: wholeSurface ? undefined : damageOf(info),
+      scrollTree: scrollTreeJson(info.metadata),
+    });
     return true;
   } finally {
     texture.release();
@@ -59,6 +63,7 @@ function presentShmFrame(
           size: info.dataSize,
         },
         damage,
+        scrollTree: scrollTreeJson(info.metadata),
         released: () => frame.release(),
       });
     } catch {
@@ -69,6 +74,18 @@ function presentShmFrame(
   } finally {
     if (!handedOff) frame.release();
   }
+}
+
+interface ScrollMetadata {
+  pageScaleFactor?: number;
+  scrollTree?: unknown[];
+  drawnLayers?: unknown[];
+}
+
+function scrollTreeJson(metadata: object): string | undefined {
+  const { pageScaleFactor, scrollTree, drawnLayers } = metadata as ScrollMetadata;
+  if (!scrollTree || pageScaleFactor !== 1) return undefined;
+  return JSON.stringify({ scrollTree, drawnLayers: drawnLayers ?? [] });
 }
 
 function presentBitmap(surface: Surface, image: NativeImage, dirtyRect?: Rectangle): boolean {

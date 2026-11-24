@@ -322,6 +322,9 @@ export const ghostty: Detect = (env, run) => {
       const result = await ghosttyCommand("input", [pane, text]);
       if (result !== "ok") throw new Error(`Ghostty could not type into pane ${pane}`);
     },
+    async pasteKey(pane) {
+      await ghosttyCommand("action", [pane, "text:\\x16"]);
+    },
     async neighbor(from, direction) {
       const [window, tab] = from.tab.split(":");
       const result = (await ghosttyCommand("neighbor", [window, tab, from.id, direction])).trim();

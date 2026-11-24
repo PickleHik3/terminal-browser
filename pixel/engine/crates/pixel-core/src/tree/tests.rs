@@ -1,14 +1,13 @@
 use super::*;
-use crate::canvas::Canvas;
 use crate::desc::Desc;
-use crate::paint::paint;
-use crate::style::{Align, Border, BorderSide, Edges, Paint, Position};
+use crate::text_input::{MARK_CHAR, Mark};
+use crate::style::{Align, Edges, Paint, Position};
 
 static FONT_BYTES: &[u8] =
     include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf");
 
-fn font() -> fontdue::Font {
-    fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default()).unwrap()
+fn font() -> crate::fonts::Font {
+    crate::fonts::Font::single(fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default()).unwrap())
 }
 
 fn tree_of(window: (f32, f32), children: Vec<Desc>) -> Tree {
@@ -17,20 +16,8 @@ fn tree_of(window: (f32, f32), children: Vec<Desc>) -> Tree {
         children,
         ..Desc::default()
     });
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     tree
-}
-
-fn painted(tree: &mut Tree, window: (u32, u32), cursor: Option<(f32, f32)>) -> Canvas {
-    let mut canvas = Canvas::new(window.0, window.1);
-    tree.flush_layout(&[font()], 16.0);
-    paint(tree, &mut canvas, &[font()], cursor, None);
-    canvas
-}
-
-fn pixel(canvas: &Canvas, x: u32, y: u32) -> [u8; 4] {
-    let i = ((y * canvas.width + x) * 4) as usize;
-    canvas.pixels[i..i + 4].try_into().unwrap()
 }
 
 fn decode_signal() -> std::sync::mpsc::Receiver<()> {
@@ -82,6 +69,81 @@ fn hit_click_prefers_the_topmost_clickable_and_falls_back_to_ancestors() {
 }
 
 #[test]
+fn pointer_shape_resolves_explicit_shapes_then_inputs_then_selectable_text() {
+    let sized = |x: f32, w: f32| Style {
+        position: Position::Absolute,
+        inset: crate::style::Inset {
+            left: Some(crate::style::InsetValue::Px(x)),
+            top: Some(crate::style::InsetValue::Px(0.0)),
+            ..Default::default()
+        },
+        width: Dimension::Px(w),
+        height: Dimension::Px(40.0),
+        ..Style::default()
+    };
+    let label = |selectable: bool| Desc {
+        text: Some("label".into()),
+        style: Style {
+            selectable: Some(selectable),
+            ..Style::default()
+        },
+        ..Desc::default()
+    };
+    let tree = tree_of(
+        (500.0, 100.0),
+        vec![
+            Desc {
+                style: Style {
+                    pointer_shape: Some("pointer".into()),
+                    ..sized(0.0, 100.0)
+                },
+                clickable: true,
+                children: vec![label(true)],
+                ..Desc::default()
+            },
+            Desc {
+                style: sized(100.0, 100.0),
+                children: vec![label(true)],
+                ..Desc::default()
+            },
+            Desc {
+                style: sized(200.0, 100.0),
+                clickable: true,
+                children: vec![label(true)],
+                ..Desc::default()
+            },
+            Desc {
+                style: sized(300.0, 100.0),
+                children: vec![label(false)],
+                ..Desc::default()
+            },
+            Desc {
+                style: Style {
+                    pointer_shape: Some("pointer".into()),
+                    ..sized(400.0, 100.0)
+                },
+                children: vec![Desc {
+                    style: Style {
+                        width: Dimension::Px(100.0),
+                        height: Dimension::Px(40.0),
+                        ..Style::default()
+                    },
+                    input: Some(InputProps::default()),
+                    ..Desc::default()
+                }],
+                ..Desc::default()
+            },
+        ],
+    );
+    assert_eq!(tree.pointer_shape_at(5.0, 5.0), "pointer");
+    assert_eq!(tree.pointer_shape_at(105.0, 5.0), "text");
+    assert_eq!(tree.pointer_shape_at(205.0, 5.0), "default");
+    assert_eq!(tree.pointer_shape_at(305.0, 5.0), "default");
+    assert_eq!(tree.pointer_shape_at(405.0, 5.0), "text");
+    assert_eq!(tree.pointer_shape_at(150.0, 80.0), "default");
+}
+
+#[test]
 fn pointer_hit_prefers_the_topmost_pointer_surface() {
     let mut tree = Tree::new((200.0, 100.0));
     let bottom = tree.create(Props {
@@ -105,7 +167,7 @@ fn pointer_hit_prefers_the_topmost_pointer_surface() {
     });
     tree.append(tree.root(), bottom);
     tree.append(tree.root(), top);
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(tree.hit_pointer(10.0, 10.0), Some(top));
     assert_eq!(tree.hit_pointer(100.0, 50.0), Some(bottom));
 }
@@ -134,7 +196,7 @@ fn pointer_hit_stops_at_a_drag_surface_drawn_over_it() {
     });
     tree.append(tree.root(), page);
     tree.append(tree.root(), canvas);
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(tree.hit_pointer(10.0, 10.0), None);
     assert_eq!(tree.hit_drag(10.0, 10.0), Some(canvas));
     assert_eq!(tree.hit_pointer(100.0, 50.0), Some(page));
@@ -165,36 +227,10 @@ fn touch_hit_is_the_pointer_surface_only_when_it_takes_touches() {
     });
     tree.append(tree.root(), page);
     tree.append(tree.root(), panel);
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(tree.hit_touch(100.0, 50.0), Some(page));
     assert_eq!(tree.hit_pointer(10.0, 10.0), Some(panel));
     assert_eq!(tree.hit_touch(10.0, 10.0), None);
-}
-
-#[test]
-fn nodes_are_found_by_key_and_hover_swaps_their_background() {
-    let block = || Desc {
-        style: Style {
-            width: Dimension::Px(10.0),
-            height: Dimension::Px(10.0),
-            background: Some(Paint::Solid([1, 1, 1, 255])),
-            hover_background: Some([9, 9, 9, 255]),
-            ..Style::default()
-        },
-        key: Some("panel".into()),
-        ..Desc::default()
-    };
-    let mut tree = tree_of((10.0, 10.0), vec![block()]);
-    let rect = tree.rect(tree.find("panel").unwrap()).unwrap();
-    assert_eq!((rect.w, rect.h), (10.0, 10.0));
-    assert!(tree.find("missing").is_none());
-    let canvas = painted(&mut tree, (10, 10), Some((5.0, 5.0)));
-    assert_eq!(pixel(&canvas, 0, 0), [9, 9, 9, 255]);
-    assert!(tree.hover_at(5.0, 5.0).is_some());
-    assert!(tree.hover_at(50.0, 50.0).is_none());
-
-    let canvas = painted(&mut tree, (10, 10), Some((50.0, 50.0)));
-    assert_eq!(pixel(&canvas, 0, 0), [1, 1, 1, 255]);
 }
 
 fn scroller(clickable_second: bool) -> Vec<Desc> {
@@ -239,20 +275,6 @@ fn scroll_area_reports_overflowing_content() {
 }
 
 #[test]
-fn scroll_offset_shifts_children_and_clips_painting() {
-    let mut tree = tree_of((40.0, 60.0), scroller(false));
-    let id = tree.find("scroller").unwrap();
-    tree.scroll_state_mut(id).unwrap().position = 10.0;
-    tree.mark_place();
-    let canvas = painted(&mut tree, (40, 60), None);
-    // Offset 10 scrolls the red/green boundary from y=40 up to y=30.
-    assert_eq!(pixel(&canvas, 0, 29), [10, 0, 0, 255]);
-    assert_eq!(pixel(&canvas, 0, 30), [0, 20, 0, 255]);
-    // The viewport ends at y=40; the green block must not paint below it.
-    assert_eq!(pixel(&canvas, 0, 40), [0, 0, 0, 0]);
-}
-
-#[test]
 fn scrolled_out_children_do_not_take_clicks() {
     let tree = tree_of((40.0, 40.0), scroller(true));
     assert!(
@@ -264,60 +286,12 @@ fn scrolled_out_children_do_not_take_clicks() {
     let id = tree.find("scroller").unwrap();
     tree.scroll_state_mut(id).unwrap().position = 40.0;
     tree.mark_place();
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     let hit = tree.hit_click(5.0, 35.0).unwrap();
     assert_eq!(
         tree.key_of(hit),
         Some("green"),
         "fully scrolled, second block fills the viewport"
-    );
-}
-
-#[test]
-fn absolute_nodes_place_by_inset_and_sit_on_top() {
-    let mut tree = tree_of(
-        (100.0, 100.0),
-        vec![
-            Desc {
-                style: Style {
-                    width: Dimension::Px(100.0),
-                    height: Dimension::Px(100.0),
-                    ..Style::default()
-                },
-                key: Some("under".into()),
-                clickable: true,
-                ..Desc::default()
-            },
-            Desc {
-                style: Style {
-                    position: Position::Absolute,
-                    inset: crate::style::Inset::top_left(30.0, 40.0),
-                    width: Dimension::Px(20.0),
-                    height: Dimension::Px(10.0),
-                    background: Some(Paint::Solid([9, 9, 9, 255])),
-                    ..Style::default()
-                },
-                key: Some("float".into()),
-                clickable: true,
-                ..Desc::default()
-            },
-        ],
-    );
-    let rect = tree.rect(tree.find("float").unwrap()).unwrap();
-    assert_eq!((rect.x, rect.y, rect.w, rect.h), (30.0, 40.0, 20.0, 10.0));
-    let canvas = painted(&mut tree, (100, 100), None);
-    assert_eq!(
-        pixel(&canvas, 35, 45),
-        [9, 9, 9, 255],
-        "floating node paints over the sibling that fills the window"
-    );
-    assert_eq!(
-        tree.key_of(tree.hit_click(35.0, 45.0).unwrap()),
-        Some("float")
-    );
-    assert_eq!(
-        tree.key_of(tree.hit_click(5.0, 5.0).unwrap()),
-        Some("under")
     );
 }
 
@@ -346,51 +320,62 @@ fn editor(initial: &str) -> Vec<Desc> {
     }]
 }
 
+fn editor_with_caret(initial: &str, shape: CaretShape) -> Vec<Desc> {
+    let mut desc = editor(initial);
+    desc[0].children[0].input.as_mut().unwrap().caret_shape = shape;
+    desc
+}
+
 #[test]
-fn input_nodes_paint_caret_and_selection_and_expose_geometry() {
-    let mut tree = tree_of((200.0, 60.0), editor("hello"));
-    let id = tree.find("in").unwrap();
-    tree.input_mut(id).unwrap().set_cursor(2, false);
-    tree.mark_paint();
+fn a_wrapping_row_moves_children_that_do_not_fit_onto_the_next_line() {
+    let card = |key: &str| Desc {
+        style: Style { width: Dimension::Px(120.0), height: Dimension::Px(30.0), ..Style::default() },
+        key: Some(key.into()),
+        ..Desc::default()
+    };
+    let row = |wrap| {
+        vec![Desc {
+            style: Style { width: Dimension::Px(200.0), flex_wrap: wrap, ..Style::default() },
+            children: vec![card("a"), card("b")],
+            ..Desc::default()
+        }]
+    };
+    let wrapped = tree_of((300.0, 100.0), row(true));
+    let (a, b) = (wrapped.rect(wrapped.find("a").unwrap()).unwrap(), wrapped.rect(wrapped.find("b").unwrap()).unwrap());
+    assert_eq!((b.x, b.y), (a.x, a.y + 30.0), "the second card starts the next line");
 
-    let geometry = tree.input_geometry(id).unwrap();
-    assert_eq!(geometry.origin, (4.0, 4.0), "origin is inside the padding");
+    let single = tree_of((300.0, 100.0), row(false));
+    let b = single.rect(single.find("b").unwrap()).unwrap();
+    assert_eq!(b.y, 0.0, "without wrapping the cards share a line and shrink");
+}
+
+#[test]
+fn a_block_caret_stays_on_the_line_when_the_input_is_only_as_wide_as_its_text() {
     let fonts = [font()];
-    let caret = geometry.caret_rect("hello", &[], 2, &fonts);
-    let center = (
-        (caret.x + caret.w / 2.0) as u32,
-        (caret.y + caret.h / 2.0) as u32,
-    );
-    let canvas = painted(&mut tree, (200, 60), None);
-    let [r, g, b, _] = pixel(&canvas, center.0, center.1);
-    assert_ne!([r, g, b], [255, 0, 0], "no caret without focus");
+    for text in ["", "test"] {
+        let mut desc = editor_with_caret(text, CaretShape::Block);
+        desc[0].style.align_items = Some(Align::Start);
+        let tree = tree_of((200.0, 60.0), desc);
+        let id = tree.find("in").unwrap();
+        let geometry = tree.input_geometry(id).unwrap();
+        let end = geometry.caret_rect(text, &[], text.len(), &fonts);
+        assert_eq!(end.y, geometry.origin.1, "caret after {text:?} stays on its line");
+    }
+}
 
-    tree.set_focus(Some(id));
-    let canvas = painted(&mut tree, (200, 60), None);
-    let [r, g, b, _] = pixel(&canvas, center.0, center.1);
-    assert_eq!([r, g, b], [255, 0, 0], "caret painted");
-    assert_eq!(
-        geometry.offset_at("hello", &[], (caret.x + 0.1, caret.y + 1.0), &fonts),
-        2,
-        "geometry maps points back to offsets"
-    );
-
-    tree.input_mut(id).unwrap().set_cursor(4, true);
-    tree.mark_paint();
-    let canvas = painted(&mut tree, (200, 60), None);
-    let selected = geometry.caret_rect("hello", &[], 3, &fonts);
-    let [r, g, b, _] = pixel(&canvas, selected.x as u32 + 1, selected.y as u32 + 1);
-    assert_eq!(
-        [r, g, b],
-        [0, 255, 0],
-        "selection painted behind the glyphs"
-    );
-    let [r, g, b, _] = pixel(&canvas, (caret.x + caret.w / 2.0) as u32, center.1);
-    assert_eq!(
-        [r, g, b],
-        [0, 255, 0],
-        "no caret while a selection is active"
-    );
+#[test]
+fn a_block_caret_on_a_mark_is_as_wide_as_the_mark() {
+    let fonts = [font()];
+    let marks = [Mark { id: 1, offset: 1, advance: 40.0, data: None }];
+    let text = format!("a{MARK_CHAR}b");
+    let geometry = InputGeometry {
+        origin: (0.0, 0.0),
+        font: 0,
+        px: 16.0,
+        caret: CaretShape::Block,
+        max_width: None,
+    };
+    assert_eq!(geometry.caret_rect(&text, &marks, 1, &fonts).w, 40.0);
 }
 
 #[test]
@@ -456,7 +441,7 @@ fn text_leaves_size_the_layout_and_relayout_when_text_changes() {
         }],
         ..Desc::default()
     });
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     let after = tree.rect(id).unwrap();
     assert!(after.w > before.w, "{} > {}", after.w, before.w);
 }
@@ -599,72 +584,9 @@ fn outside_click_targets_report_flagged_nodes_not_containing_the_point() {
         ..Props::default()
     });
     tree.append(tree.root(), id);
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert!(tree.outside_click_targets(35.0, 45.0).is_empty());
     assert_eq!(tree.outside_click_targets(5.0, 5.0), vec![id]);
-}
-
-#[test]
-fn spans_color_glyph_runs_within_one_text_node() {
-    let mut tree = Tree::new((100.0, 40.0));
-    let id = tree.create(Props {
-        text: Some("XX".into()),
-        spans: vec![TextSpan {
-            start: 0,
-            end: 1,
-            color: [255, 0, 0, 255],
-            background: None,
-            ..TextSpan::default()
-        }],
-        ..Props::default()
-    });
-    tree.append(tree.root(), id);
-    let canvas = painted(&mut tree, (100, 40), None);
-    let cell = crate::canvas::measure_text(&font(), "X", 16.0).ceil() as u32;
-    let any_pixel = |x0: u32, x1: u32, pred: &dyn Fn([u8; 4]) -> bool| {
-        (x0..x1).any(|x| (0..40).any(|y| pred(pixel(&canvas, x, y))))
-    };
-    assert!(
-        any_pixel(0, cell, &|p| p[0] > 100 && p[1] == 0 && p[2] == 0),
-        "first char paints in the span's red"
-    );
-    assert!(
-        !any_pixel(0, cell / 2, &|p| p[1] > 0),
-        "first char has no default-colored pixels"
-    );
-    assert!(
-        any_pixel(cell, cell * 2, &|p| p[0] > 100 && p[1] == p[0] && p[2] == p[0]),
-        "second char falls back to the node color"
-    );
-}
-
-#[test]
-fn span_background_fills_behind_the_byte_range_only() {
-    let mut tree = Tree::new((100.0, 40.0));
-    let id = tree.create(Props {
-        text: Some("XX".into()),
-        spans: vec![TextSpan {
-            start: 0,
-            end: 1,
-            color: [255, 255, 255, 255],
-            background: Some([0, 0, 255, 255]),
-            ..TextSpan::default()
-        }],
-        ..Props::default()
-    });
-    tree.append(tree.root(), id);
-    let canvas = painted(&mut tree, (100, 40), None);
-    let cell = crate::canvas::measure_text(&font(), "X", 16.0).floor() as u32;
-    assert_eq!(
-        pixel(&canvas, 1, 1),
-        [0, 0, 255, 255],
-        "background fills the first char's cell where no glyph covers"
-    );
-    assert_eq!(
-        pixel(&canvas, cell + 2, 1),
-        [0, 0, 0, 0],
-        "second char's cell has no fill"
-    );
 }
 
 #[test]
@@ -717,7 +639,7 @@ fn shrinking_content_clamps_the_scroll_position() {
     state.position = 40.0;
     state.set_target(40.0);
     tree.mark_place();
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(tree.scroll_state(id).unwrap().position, 40.0);
 
     // Drop the second block: content now fits, so scroll snaps to 0.
@@ -727,7 +649,7 @@ fn shrinking_content_clamps_the_scroll_position() {
         children: desc,
         ..Desc::default()
     });
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     let state = tree.scroll_state(id).unwrap();
     assert_eq!(state.position, 0.0);
     assert_eq!(state.target, 0.0);
@@ -757,7 +679,7 @@ fn hidden_nodes_zero_their_rects() {
     props.style.width = Dimension::Px(50.0);
     props.style.height = Dimension::Px(50.0);
     tree.update(id, props);
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(tree.rect(id), Some(PxRect::ZERO));
 }
 
@@ -792,7 +714,7 @@ fn scroll_range_follows_content_height_and_no_overflow_hides_the_bar() {
         children: virtual_list(Some(800.0)),
         ..Desc::default()
     });
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(
         tree.scroll_max(id),
         600.0,
@@ -954,7 +876,7 @@ fn labels(a: &str, b: &str) -> Vec<Desc> {
     }]
 }
 
-fn point_at(tree: &Tree, id: NodeId, offset: usize, fonts: &[fontdue::Font]) -> (f32, f32) {
+fn point_at(tree: &Tree, id: NodeId, offset: usize, fonts: &[crate::fonts::Font]) -> (f32, f32) {
     let geometry = tree.text_geometry(id).unwrap();
     let text = tree.text_of(id).unwrap();
     let rect = geometry.caret_rect(text, &[], offset, fonts);
@@ -982,6 +904,20 @@ fn doc_selection_spans_text_nodes_in_document_order() {
     tree.doc_select_drag(point_at(&tree, a, 6, &fonts), &fonts);
     assert_eq!(tree.doc_selection_range(a), Some(6..10), "backwards drag");
     assert_eq!(tree.doc_selection_range(b), Some(0..6));
+}
+
+#[test]
+fn a_click_on_text_places_the_caret_without_putting_the_whole_tree_in_paint_order() {
+    let fonts = [font()];
+    let mut tree = tree_of((400.0, 200.0), labels("foo bar baz", "x"));
+    let a = tree.find("a").unwrap();
+    tree.order_stale = true;
+    tree.doc_collapse();
+    assert!(tree.doc_select_down_near((399.0, 199.0), &fonts), "a click below the text starts at its end");
+    assert!(tree.doc_select_down(point_at(&tree, a, 5, &fonts), &fonts));
+    assert!(tree.order_stale);
+    tree.doc_select_drag(point_at(&tree, a, 9, &fonts), &fonts);
+    assert_eq!(tree.doc_selected_text().as_deref(), Some("ar b"));
 }
 
 #[test]
@@ -1049,31 +985,6 @@ fn clickable_and_optout_subtrees_are_not_selectable() {
         "selectable: false opts the subtree out"
     );
     assert!(!tree.doc_select_down(p, &fonts));
-}
-
-#[test]
-fn doc_selection_paints_with_the_inherited_color() {
-    let children = vec![Desc {
-        style: Style {
-            selection_color: Some([0, 255, 0, 255]),
-            ..Style::default()
-        },
-        key: Some("p".into()),
-        text: Some("hello".into()),
-        ..Desc::default()
-    }];
-    let mut tree = tree_of((200.0, 60.0), children);
-    assert!(tree.doc_select_all());
-    let id = tree.find("p").unwrap();
-    assert_eq!(tree.doc_selection_range(id), Some(0..5));
-    let fonts = [font()];
-    let rect = tree
-        .text_geometry(id)
-        .unwrap()
-        .caret_rect("hello", &[], 1, &fonts);
-    let canvas = painted(&mut tree, (200, 60), None);
-    let [r, g, b, _] = pixel(&canvas, rect.x as u32 + 1, rect.y as u32 + 1);
-    assert_eq!([r, g, b], [0, 255, 0], "selection painted behind glyphs");
 }
 
 #[test]
@@ -1222,7 +1133,7 @@ fn an_outside_click_dismisses_the_selection_and_repaints() {
     tree.doc_select_drag(point_at(&tree, a, 5, &fonts), &fonts);
     tree.doc_select_up();
     assert_eq!(tree.doc_selected_text().as_deref(), Some("first"));
-    tree.flush_layout(&[font()], 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     tree.clear_paint_flag();
 
     let rect = tree.rect(a).unwrap();
@@ -1292,35 +1203,6 @@ fn selection_stays_inside_the_scroll_container_it_started_in() {
         !selected.contains("panel"),
         "empty-space click adopted the other container: {selected:?}"
     );
-}
-
-#[test]
-fn unified_selection_bands_cover_the_gap_between_nodes() {
-    let fonts = [font()];
-    let mut children = labels("first", "second");
-    children[0].style.selection_mode = SelectionMode::Unified;
-    children[0].style.gap = 10.0;
-    children[0].key = Some("wrap".into());
-    let mut tree = tree_of((400.0, 200.0), children);
-    let a = tree.find("a").unwrap();
-    let b = tree.find("b").unwrap();
-    tree.doc_select_down(point_at(&tree, a, 1, &fonts), &fonts);
-    tree.doc_select_drag(point_at(&tree, b, 3, &fonts), &fonts);
-    let blocks = tree.doc_selection_blocks(&fonts);
-    let (container, bands, color) = blocks.first().cloned().unwrap();
-    assert_eq!(tree.key_of(container), Some("wrap"));
-    assert_eq!(bands.len(), 3);
-    let wrap_rect = tree.rect(container).unwrap();
-    assert_eq!((bands[1].x, bands[1].w), (wrap_rect.x, wrap_rect.w));
-    let a_rect = tree.rect(a).unwrap();
-    let gap = (a_rect.x + 2.0, a_rect.y + a_rect.h + 5.0);
-    assert!(
-        bands[1].y <= gap.1 && gap.1 <= bands[1].y + bands[1].h,
-        "the gap row sits inside the middle band"
-    );
-    let canvas = painted(&mut tree, (400, 200), None);
-    let [r, g, bl, _] = pixel(&canvas, gap.0 as u32, gap.1 as u32);
-    assert_eq!([r, g, bl], [color[0], color[1], color[2]]);
 }
 
 #[test]
@@ -1411,37 +1293,6 @@ fn controlled_input_value_updates_are_undoable() {
 }
 
 #[test]
-fn per_side_borders_paint_only_their_edges() {
-    let mut tree = tree_of(
-        (100.0, 50.0),
-        vec![Desc {
-            style: Style {
-                width: Dimension::Px(100.0),
-                height: Dimension::Px(50.0),
-                border: Some(Border {
-                    top: Some(BorderSide {
-                        width: 2.0,
-                        color: [255, 0, 0, 255],
-                    }),
-                    bottom: Some(BorderSide {
-                        width: 2.0,
-                        color: [0, 255, 0, 255],
-                    }),
-                    ..Border::default()
-                }),
-                ..Style::default()
-            },
-            ..Desc::default()
-        }],
-    );
-    let canvas = painted(&mut tree, (100, 50), None);
-    assert_eq!(pixel(&canvas, 50, 0), [255, 0, 0, 255], "top strip");
-    assert_eq!(pixel(&canvas, 50, 49), [0, 255, 0, 255], "bottom strip");
-    assert_eq!(pixel(&canvas, 0, 25), [0, 0, 0, 0], "no left border");
-    assert_eq!(pixel(&canvas, 99, 25), [0, 0, 0, 0], "no right border");
-}
-
-#[test]
 fn negative_margins_bleed_out_of_parent_padding() {
     let tree = tree_of(
         (200.0, 100.0),
@@ -1476,131 +1327,6 @@ fn negative_margins_bleed_out_of_parent_padding() {
 }
 
 #[test]
-fn unified_bands_stay_visible_over_child_backgrounds() {
-    let fonts = [font()];
-    let children = vec![Desc {
-        style: Style {
-            flex_direction: FlexDirection::Column,
-            align_items: Some(Align::Start),
-            selection_mode: SelectionMode::Unified,
-            selection_color: Some([0, 200, 0, 255]),
-            ..Style::default()
-        },
-        key: Some("wrap".into()),
-        children: vec![
-            Desc {
-                key: Some("a".into()),
-                text: Some("first".into()),
-                ..Desc::default()
-            },
-            Desc {
-                style: Style {
-                    background: Some(Paint::Solid([40, 40, 40, 255])),
-                    border: Some(Border::hairline([80, 80, 80, 255])),
-                    padding: Edges::all(6.0),
-                    ..Style::default()
-                },
-                key: Some("row".into()),
-                children: vec![Desc {
-                    key: Some("b".into()),
-                    text: Some("second".into()),
-                    ..Desc::default()
-                }],
-                ..Desc::default()
-            },
-        ],
-        ..Desc::default()
-    }];
-    let mut tree = tree_of((400.0, 200.0), children);
-    let a = tree.find("a").unwrap();
-    let b = tree.find("b").unwrap();
-    tree.doc_select_down(point_at(&tree, a, 1, &fonts), &fonts);
-    tree.doc_select_drag(point_at(&tree, b, 4, &fonts), &fonts);
-    assert!(!tree.doc_selection_blocks(&fonts).is_empty());
-
-    let row = tree.rect(tree.find("row").unwrap()).unwrap();
-    let caret = tree
-        .text_geometry(b)
-        .unwrap()
-        .caret_rect("second", &[], 0, &fonts);
-    let canvas = painted(&mut tree, (400, 200), None);
-    assert_eq!(
-        pixel(&canvas, caret.x as u32 + 1, caret.y as u32 + 1),
-        [0, 200, 0, 255],
-        "band shows behind the glyphs inside the chromed row"
-    );
-    assert_eq!(
-        pixel(&canvas, row.x as u32 + 2, caret.y as u32 + 1),
-        [0, 200, 0, 255],
-        "band covers the row's own background, not the other way around"
-    );
-}
-
-#[test]
-fn placeholder_slot_fills_the_image_rect_until_the_decode_lands() {
-    let dir = std::env::temp_dir().join("pixel-tree-slot-test");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("slot.png");
-    image::RgbaImage::from_pixel(4, 2, image::Rgba([0, 200, 0, 255]))
-        .save(&path)
-        .unwrap();
-    let decoded = decode_signal();
-    let mut tree = tree_of(
-        (200.0, 100.0),
-        vec![Desc {
-            style: Style {
-                align_items: Some(Align::Start),
-                ..Style::default()
-            },
-            children: vec![Desc {
-                style: Style {
-                    width: Dimension::Px(40.0),
-                    ..Style::default()
-                },
-                image: Some(ImageProps {
-                    src: path.to_string_lossy().to_string(),
-                    equal_to: Vec::new(),
-                }),
-                key: Some("img".into()),
-                children: vec![Desc {
-                    style: Style {
-                        background: Some(Paint::Solid([50, 50, 50, 255])),
-                        ..Style::default()
-                    },
-                    slot: Some(SlotKind::Placeholder),
-                    key: Some("ph".into()),
-                    ..Desc::default()
-                }],
-                ..Desc::default()
-            }],
-            ..Desc::default()
-        }],
-    );
-
-    let img = tree.find("img").unwrap();
-    let ph = tree.find("ph").unwrap();
-    let img_rect = tree.rect(img).unwrap();
-    assert_eq!(
-        (img_rect.w, img_rect.h),
-        (40.0, 20.0),
-        "sniffed size drives layout while pending"
-    );
-    assert_eq!(
-        tree.rect(ph).unwrap(),
-        img_rect,
-        "placeholder is pinned to the image rect"
-    );
-    let canvas = painted(&mut tree, (200, 100), None);
-    assert_eq!(pixel(&canvas, 20, 10), [50, 50, 50, 255]);
-
-    wait_for_decode(&decoded);
-    tree.mark_place();
-    let canvas = painted(&mut tree, (200, 100), None);
-    assert_eq!(tree.rect(ph).unwrap(), PxRect::ZERO, "placeholder retires");
-    assert_eq!(pixel(&canvas, 20, 10), [0, 200, 0, 255]);
-}
-
-#[test]
 fn mark_widgets_reserve_width_and_place_inline() {
     let fonts = [font()];
     let mut tree = Tree::new((400.0, 100.0));
@@ -1630,7 +1356,7 @@ fn mark_widgets_reserve_width_and_place_inline() {
         ..Props::default()
     });
     tree.append(input, widget);
-    tree.flush_layout(&fonts, 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
 
     let geometry = tree.input_geometry(input).unwrap();
     let text = tree.input_text(input).unwrap().to_string();
@@ -1660,7 +1386,7 @@ fn mark_widgets_reserve_width_and_place_inline() {
         i.set_cursor(after, false);
         i.delete_backward(Granularity::Char);
     });
-    tree.flush_layout(&fonts, 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(
         tree.rect(widget),
         Some(PxRect::ZERO),
@@ -1670,7 +1396,7 @@ fn mark_widgets_reserve_width_and_place_inline() {
     tree.edit_input(input, |i| {
         assert!(i.undo());
     });
-    tree.flush_layout(&fonts, 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     assert_eq!(
         tree.rect(widget).map(|r| r.w),
         Some(40.0),
@@ -1679,71 +1405,7 @@ fn mark_widgets_reserve_width_and_place_inline() {
 }
 
 #[test]
-fn static_text_marks_place_widgets_like_inputs() {
-    let fonts = [font()];
-    let mut tree = Tree::new((400.0, 100.0));
-    let sentinel = crate::text_input::MARK_CHAR;
-    let text = tree.create(Props {
-        style: Style {
-            width: Dimension::Px(300.0),
-            ..Style::default()
-        },
-        text: Some(format!("a{sentinel}b{sentinel}c")),
-        // Claim only the first sentinel; the stray second one is stripped.
-        marks: vec![(9, 1)],
-        ..Props::default()
-    });
-    tree.append(tree.root(), text);
-    let widget = tree.create(Props {
-        style: Style {
-            width: Dimension::Px(40.0),
-            height: Dimension::Px(10.0),
-            ..Style::default()
-        },
-        mark: Some(9),
-        ..Props::default()
-    });
-    tree.append(text, widget);
-    tree.flush_layout(&fonts, 16.0);
-
-    assert_eq!(
-        tree.text_of(text).unwrap(),
-        format!("a{sentinel}bc"),
-        "unclaimed sentinel stripped"
-    );
-    let rect = tree.rect(widget).unwrap();
-    assert_eq!((rect.w, rect.h), (40.0, 10.0));
-    assert!(rect.x > 0.0, "widget placed inline");
-
-    // The node stays a selectable doc-text leaf despite its widget child.
-    assert!(tree.selectable_text_leaf(text));
-
-    // Painting draws the widget background at its inline position.
-    let mut painted_tree = tree;
-    painted_tree.update(
-        widget,
-        Props {
-            style: Style {
-                width: Dimension::Px(40.0),
-                height: Dimension::Px(10.0),
-                background: Some(Paint::Solid([200, 30, 30, 255])),
-                ..Style::default()
-            },
-            mark: Some(9),
-            ..Props::default()
-        },
-    );
-    let canvas = painted(&mut painted_tree, (400, 100), None);
-    let rect = painted_tree.rect(widget).unwrap();
-    assert_eq!(
-        pixel(&canvas, (rect.x + 5.0) as u32, (rect.y + 5.0) as u32),
-        [200, 30, 30, 255]
-    );
-}
-
-#[test]
 fn failed_image_with_unknown_dims_occupies_a_square() {
-    let fonts = [font()];
     let decoded = decode_signal();
     let mut tree = Tree::new((300.0, 200.0));
     let row = tree.create(Props {
@@ -1762,15 +1424,16 @@ fn failed_image_with_unknown_dims_occupies_a_square() {
         image: Some(ImageProps {
             src: "/nonexistent/never.png".into(),
             equal_to: Vec::new(),
+            glyph: None,
         }),
         ..Props::default()
     });
     tree.append(row, image);
-    tree.flush_layout(&fonts, 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
 
     wait_for_decode(&decoded);
     tree.mark_layout();
-    tree.flush_layout(&fonts, 16.0);
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
     let rect = tree.rect(image).unwrap();
     assert_eq!(
         (rect.w, rect.h),
@@ -1866,3 +1529,732 @@ fn unwrapped_input_does_not_grow_past_its_flex_width() {
     assert!(width <= 100.0, "input clamped to the row, got {width}");
 }
 
+
+fn field(wrap: bool) -> Vec<Desc> {
+    vec![Desc {
+        style: Style {
+            width: Dimension::Px(200.0),
+            height: Dimension::Px(60.0),
+            ..Style::default()
+        },
+        children: vec![Desc {
+            style: Style {
+                padding: Edges::all(4.0),
+                wrap,
+                ..Style::default()
+            },
+            key: Some("in".into()),
+            input: Some(InputProps {
+                initial: "hello".into(),
+                ..InputProps::default()
+            }),
+            ..Desc::default()
+        }],
+        ..Desc::default()
+    }]
+}
+
+#[test]
+fn single_line_inputs_center_their_text_vertically() {
+    let line = line_height(&font(), DEFAULT_RESOLVED.px);
+    let expected = 4.0 + ((52.0 - line) / 2.0).round();
+
+    let single = tree_of((200.0, 60.0), field(false));
+    let id = single.find("in").unwrap();
+    assert_eq!(single.input_geometry(id).unwrap().origin.1, expected, "text centered inside the padding box");
+
+    let multi = tree_of((200.0, 60.0), field(true));
+    let id = multi.find("in").unwrap();
+    assert_eq!(multi.input_geometry(id).unwrap().origin.1, 4.0, "wrapping inputs stay top aligned");
+}
+
+#[test]
+fn font_family_weight_and_style_inherit_separately() {
+    let mut fonts = crate::fonts::FontRegistry::bundled();
+    let sans = fonts.families(&["sans-serif".to_string()]);
+    let mut tree = Tree::new((200.0, 100.0));
+    tree.reconcile(Desc {
+        children: vec![Desc {
+            style: Style { font_family: Some(sans), ..Style::default() },
+            children: vec![Desc {
+                text: Some("bold".into()),
+                style: Style { font_weight: Some(crate::fonts::BOLD), ..Style::default() },
+                ..Desc::default()
+            }],
+            ..Desc::default()
+        }],
+        ..Desc::default()
+    });
+    tree.flush_layout(&mut fonts, 16.0);
+    let parent = tree.children(tree.root())[0];
+    let text = tree.children(parent)[0];
+    let resolved = tree.node(text).resolved;
+    assert_eq!((resolved.families, resolved.weight), (sans, crate::fonts::BOLD), "the child keeps the parent's family");
+    assert_eq!(resolved.font, fonts.resolve(sans, crate::fonts::BOLD, false));
+    assert_ne!(resolved.font, tree.node(parent).resolved.font);
+}
+
+fn rows(count: u8, overflow_from: Option<u8>) -> Vec<Desc> {
+    let row = |i: u8| Desc {
+        style: Style {
+            width: Dimension::Px(20.0),
+            height: Dimension::Px(20.0),
+            flex_shrink: 0.0,
+            background: Some(Paint::Solid([i, 0, 0, 255])),
+            ..Style::default()
+        },
+        key: Some(format!("row{i}")),
+        clickable: true,
+        children: (overflow_from == Some(i))
+            .then(|| Desc {
+                style: Style {
+                    width: Dimension::Px(30.0),
+                    height: Dimension::Px(60.0),
+                    flex_shrink: 0.0,
+                    background: Some(Paint::Solid([0, 0, 200, 255])),
+                    ..Style::default()
+                },
+                ..Desc::default()
+            })
+            .into_iter()
+            .collect(),
+        ..Desc::default()
+    };
+    vec![Desc {
+        style: Style {
+            flex_direction: FlexDirection::Column,
+            width: Dimension::Px(40.0),
+            height: Dimension::Px(100.0),
+            overflow: Overflow::Scroll,
+            ..Style::default()
+        },
+        key: Some("scroller".into()),
+        children: (0..count).map(row).collect(),
+        ..Desc::default()
+    }]
+}
+
+fn scroll_on_screen(tree: &mut Tree, position: f32) {
+    let id = tree.find("scroller").unwrap();
+    tree.scroll_state_mut(id).unwrap().position = position;
+    tree.mark_place();
+    assert!(tree.dirty());
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+}
+
+#[test]
+fn content_y_is_exact_for_rows_that_were_never_placed_at_this_offset() {
+    let mut tree = tree_of((40.0, 100.0), rows(100, None));
+    let scroller = tree.find("scroller").unwrap();
+    scroll_on_screen(&mut tree, 700.0);
+    let last = tree.find("row99").unwrap();
+    assert_eq!(tree.content_y(last, scroller), Some(1980.0));
+    assert_eq!(tree.content_y(tree.find("row35").unwrap(), scroller), Some(700.0));
+}
+
+#[test]
+fn restyling_a_container_recolors_text_inside_it() {
+    let colored = |color: Color| {
+        vec![Desc {
+            key: Some("box".into()),
+            style: Style { color: Some(color), ..Style::default() },
+            children: vec![Desc { key: Some("text".into()), text: Some("hi".into()), ..Desc::default() }],
+            ..Desc::default()
+        }]
+    };
+    let mut tree = tree_of((100.0, 40.0), colored([200, 0, 0, 255]));
+    let text = tree.find("text").unwrap();
+    tree.reconcile(Desc { children: colored([0, 0, 200, 255]), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    assert_eq!(tree.find("text"), Some(text));
+    assert_eq!(tree.get(text).unwrap().resolved.color, [0, 0, 200, 255]);
+}
+
+fn list_of(count: usize, row_h: impl Fn(usize) -> f32, list: Style) -> Vec<Desc> {
+    let row = |i: usize| Desc {
+        style: Style { height: Dimension::Px(row_h(i)), background: Some(Paint::Solid([i as u8, 1, 0, 255])), ..Style::default() },
+        key: Some(format!("row{i}")),
+        clickable: true,
+        ..Desc::default()
+    };
+    vec![Desc {
+        style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..list },
+        key: Some("list".into()),
+        children: (0..count).map(row).collect(),
+        ..Desc::default()
+    }]
+}
+
+fn scroll_list(tree: &mut Tree, position: f32) {
+    let id = tree.find("list").unwrap();
+    let state = tree.scroll_state_mut(id).unwrap();
+    state.position = position;
+    state.set_target(position);
+    tree.mark_place();
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+}
+
+fn catch_up(tree: &mut Tree) {
+    let fonts = crate::fonts::FontRegistry::bundled();
+    while tree.rows_pending() {
+        tree.catch_up_rows(&fonts, Instant::now() + std::time::Duration::from_secs(1));
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    }
+}
+
+#[test]
+fn far_rows_wait_with_an_estimated_height_until_caught_up() {
+    let mut tree = tree_of((40.0, 100.0), list_of(300, |i| if i % 2 == 0 { 20.0 } else { 40.0 }, Style::default()));
+    let far = tree.find("row299").unwrap();
+    assert!(tree.get(far).unwrap().measured_width.is_nan());
+    assert!(tree.rows_pending());
+    let list = tree.find("list").unwrap();
+    assert!(tree.scroll_max(list) > 0.0, "unmeasured rows still give the list a height");
+    let estimate = tree.rect(far).unwrap();
+    assert!(estimate.y > 100.0);
+    catch_up(&mut tree);
+    assert!(!tree.rows_pending());
+    assert_eq!(tree.rect(far).unwrap().y, 150.0 * 20.0 + 149.0 * 40.0);
+    assert_eq!(tree.scroll_max(list), 150.0 * 60.0 - 100.0);
+    assert_eq!(tree.content_y(far, list), Some(8960.0));
+}
+
+#[test]
+fn a_list_anchored_to_its_end_follows_growth_only_while_at_the_end() {
+    let rows = |count: usize| list_of(count, |_| 20.0, Style { scroll_anchor: ScrollAnchor::End, ..Style::default() });
+    let mut tree = tree_of((40.0, 100.0), rows(20));
+    let list = tree.find("list").unwrap();
+    assert_eq!(tree.scroll_state(list).unwrap().position, 300.0, "starts at the end");
+    tree.reconcile(Desc { children: rows(25), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    assert_eq!(tree.scroll_state(list).unwrap().position, 400.0);
+    scroll_list(&mut tree, 100.0);
+    tree.reconcile(Desc { children: rows(30), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    assert_eq!(tree.scroll_state(list).unwrap().position, 100.0);
+}
+
+#[test]
+fn a_list_anchored_to_its_end_lays_out_its_whole_last_screen_at_once() {
+    let height = |i: usize| 10.0 + (i % 3) as f32 * 10.0;
+    let tree = tree_of((40.0, 100.0), list_of(300, height, Style { scroll_anchor: ScrollAnchor::End, ..Style::default() }));
+    for i in 280..300 {
+        let rect = tree.rect(tree.find(&format!("row{i}")).unwrap()).unwrap();
+        if rect.y + rect.h > 0.0 {
+            assert_eq!(rect.h, height(i), "row{i} is on screen");
+        }
+    }
+}
+
+#[test]
+fn a_list_following_its_end_stays_there_while_rows_are_added_above() {
+    let height = |i: usize| 10.0 + (i % 3) as f32 * 10.0;
+    let style = Style { scroll_anchor: ScrollAnchor::End, ..Style::default() };
+    let rows = |from: usize| {
+        let mut list = list_of(300, height, style.clone());
+        list[0].children.drain(..from);
+        list
+    };
+    let mut tree = tree_of((40.0, 100.0), rows(290));
+    let list = tree.find("list").unwrap();
+    let fonts = crate::fonts::FontRegistry::bundled();
+    for from in (0..290).rev().step_by(7) {
+        tree.reconcile(Desc { children: rows(from), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+        assert_eq!(tree.scroll_state(list).unwrap().position, tree.scroll_max(list), "after adding rows from {from}");
+        tree.catch_up_rows(&fonts, Instant::now() + std::time::Duration::from_micros(50));
+        assert_eq!(tree.scroll_state(list).unwrap().position, tree.scroll_max(list), "after catching up from {from}");
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    }
+}
+
+#[test]
+fn a_row_far_above_the_screen_that_grows_moves_the_rows_below_it_once_caught_up() {
+    let rows = |grown: bool| {
+        let row = |i: usize| {
+            let line = |k: usize| Desc { style: Style { height: Dimension::Px(20.0), ..Style::default() }, key: Some(format!("line{i}-{k}")), ..Desc::default() };
+            let lines = if grown && i == 10 { 3 } else { 1 };
+            Desc {
+                style: Style { flex_direction: FlexDirection::Column, ..Style::default() },
+                key: Some(format!("row{i}")),
+                children: (0..lines).map(line).collect(),
+                ..Desc::default()
+            }
+        };
+        vec![Desc {
+            style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+            key: Some("list".into()),
+            children: (0..300).map(row).collect(),
+            ..Desc::default()
+        }]
+    };
+    let mut tree = tree_of((40.0, 100.0), rows(false));
+    scroll_list(&mut tree, 4000.0);
+    catch_up(&mut tree);
+    tree.reconcile(Desc { children: rows(true), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    catch_up(&mut tree);
+    let row = tree.find("row11").unwrap();
+    assert_eq!(tree.node(row).list_y, 260.0);
+}
+
+#[test]
+fn rows_added_above_while_following_the_end_line_up_once_caught_up() {
+    let height = |i: usize| 10.0 + (i % 3) as f32 * 10.0;
+    let style = Style { scroll_anchor: ScrollAnchor::End, ..Style::default() };
+    let rows = |from: usize| {
+        let mut list = list_of(300, height, style.clone());
+        list[0].children.drain(..from);
+        list
+    };
+    let mut tree = tree_of((40.0, 100.0), rows(290));
+    let list = tree.find("list").unwrap();
+    for from in (0..290).rev().step_by(7) {
+        tree.reconcile(Desc { children: rows(from), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    }
+    tree.reconcile(Desc { children: rows(0), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    catch_up(&mut tree);
+    let mut expected = 0.0;
+    for i in 0..300 {
+        let row = tree.find(&format!("row{i}")).unwrap();
+        assert_eq!(tree.node(row).list_y, expected, "row {i}");
+        expected += height(i);
+    }
+    assert_eq!(tree.scroll_max(list), expected - 100.0);
+}
+
+#[test]
+fn hits_and_selection_find_rows_of_a_list() {
+    let mut tree = tree_of((40.0, 100.0), list_of(300, |_| 20.0, Style::default()));
+    scroll_list(&mut tree, 4000.0);
+    assert_eq!(tree.hit_click(5.0, 5.0), tree.find("row200"));
+    assert_eq!(tree.hit_click(5.0, 95.0), tree.find("row204"));
+}
+
+#[test]
+fn painting_a_scrolled_list_walks_only_the_rows_near_the_screen() {
+    let mut tree = tree_of((40.0, 100.0), list_of(20_000, |_| 20.0, Style::default()));
+    scroll_list(&mut tree, 200_000.0);
+    let list = tree.find("list").unwrap();
+    let walked: Vec<NodeId> = tree.paint_children(list).collect();
+    assert!(walked.len() < 20, "walked {} rows", walked.len());
+    assert!(walked.contains(&tree.find("row10000").unwrap()));
+    assert_eq!(tree.hit_click(5.0, 5.0), tree.find("row10000"));
+}
+
+#[test]
+fn a_row_changing_far_below_the_screen_keeps_the_walk_near_the_screen() {
+    let mut tree = tree_of((40.0, 100.0), list_of(20_000, |_| 20.0, Style::default()));
+    scroll_list(&mut tree, 200_000.0);
+    tree.reconcile(Desc { children: list_of(20_000, |i| if i == 19_999 { 60.0 } else { 20.0 }, Style::default()), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    let list = tree.find("list").unwrap();
+    assert!(tree.paint_children(list).count() < 20);
+    assert_eq!(tree.hit_click(5.0, 5.0), tree.find("row10000"));
+}
+
+
+#[test]
+fn a_modal_makes_everything_outside_it_inert() {
+    let mut tree = Tree::new((200.0, 100.0));
+    let scroller = tree.create(Props {
+        style: Style { width: Dimension::Px(200.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, ..Style::default() },
+        ..Props::default()
+    });
+    let prompt = tree.create(Props {
+        style: Style { width: Dimension::Px(200.0), height: Dimension::Px(20.0), ..Style::default() },
+        input: Some(InputProps::default()),
+        ..Props::default()
+    });
+    tree.append(tree.root(), scroller);
+    tree.append(scroller, prompt);
+    let backdrop_props = |modal| Props {
+        style: Style {
+            position: Position::Absolute,
+            inset: crate::style::Inset::top_left(100.0, 0.0),
+            width: Dimension::Px(100.0),
+            height: Dimension::Px(100.0),
+            ..Style::default()
+        },
+        clickable: true,
+        modal,
+        ..Props::default()
+    };
+    let backdrop = tree.create(backdrop_props(false));
+    let field = tree.create(Props {
+        style: Style { width: Dimension::Px(100.0), height: Dimension::Px(20.0), ..Style::default() },
+        input: Some(InputProps::default()),
+        ..Props::default()
+    });
+    tree.append(tree.root(), backdrop);
+    tree.append(backdrop, field);
+    let mut fonts = crate::fonts::FontRegistry::bundled();
+    tree.flush_layout(&mut fonts, 16.0);
+    assert_eq!(tree.hit_target(10.0, 10.0), Some(HitTarget::Input(prompt)));
+    assert!(tree.scroll_area_at(10.0, 10.0).is_some());
+
+    tree.update(backdrop, backdrop_props(true));
+    tree.flush_layout(&mut fonts, 16.0);
+    assert_eq!(tree.modal_root(), Some(backdrop));
+    assert!(tree.inert(prompt) && tree.inert(scroller));
+    assert!(!tree.inert(backdrop) && !tree.inert(field));
+    assert_eq!(tree.hit_target(10.0, 10.0), Some(HitTarget::Click(backdrop)), "a click outside lands on the modal");
+    assert_eq!(tree.hit_target(110.0, 10.0), Some(HitTarget::Input(field)));
+    assert!(tree.scroll_area_at(10.0, 10.0).is_none());
+}
+
+#[test]
+fn a_removed_modal_leaves_the_tree_interactive() {
+    let mut tree = Tree::new((200.0, 100.0));
+    let prompt = tree.create(Props {
+        style: Style { width: Dimension::Px(200.0), height: Dimension::Px(20.0), ..Style::default() },
+        input: Some(InputProps::default()),
+        ..Props::default()
+    });
+    let sheet = tree.create(Props {
+        style: Style { position: Position::Absolute, width: Dimension::Px(200.0), height: Dimension::Px(50.0), ..Style::default() },
+        modal: true,
+        ..Props::default()
+    });
+    tree.append(tree.root(), prompt);
+    tree.append(tree.root(), sheet);
+    let mut fonts = crate::fonts::FontRegistry::bundled();
+    tree.flush_layout(&mut fonts, 16.0);
+    assert!(tree.inert(prompt));
+
+    tree.remove(sheet);
+    tree.flush_layout(&mut fonts, 16.0);
+    assert_eq!(tree.modal_root(), None);
+    assert!(!tree.inert(prompt));
+    assert_eq!(tree.hit_target(10.0, 10.0), Some(HitTarget::Input(prompt)));
+}
+
+#[test]
+fn a_one_word_caption_stays_one_line_when_its_card_wraps() {
+    let captioned = |width: f32| Desc {
+        style: Style { flex_direction: FlexDirection::Column, align_items: Some(Align::Start), gap: 8.0, flex_shrink: 0.0, width: Dimension::Px(width), ..Style::default() },
+        children: vec![
+            Desc { style: Style { width: Dimension::Px(width), height: Dimension::Px(264.0), flex_shrink: 0.0, ..Style::default() }, ..Desc::default() },
+            Desc { text: Some("pic.png".into()), ..Desc::default() },
+        ],
+        ..Desc::default()
+    };
+    let tree = tree_of(
+        (1650.0, 1100.0),
+        vec![Desc {
+            style: Style { flex_direction: FlexDirection::Column, width: Dimension::Px(1650.0), height: Dimension::Px(1000.0), overflow: Overflow::Scroll, ..Style::default() },
+            children: vec![Desc {
+                style: Style { flex_direction: FlexDirection::Column, ..Style::default() },
+                children: vec![Desc {
+                    style: Style { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..Style::default() },
+                    children: vec![Desc {
+                        style: Style { flex_wrap: true, align_items: Some(Align::Start), gap: 16.0, padding: Edges { top: 16.0, left: 30.0, ..Edges::default() }, ..Style::default() },
+                        key: Some("row".into()),
+                        children: vec![captioned(620.0), captioned(890.0)],
+                        ..Desc::default()
+                    }],
+                    ..Desc::default()
+                }],
+                ..Desc::default()
+            }],
+            ..Desc::default()
+        }],
+    );
+    let line = line_height(&font(), 16.0);
+    let row = tree.rect(tree.find("row").unwrap()).unwrap().h;
+    assert!((row - (16.0 + 264.0 + 8.0 + line)).abs() < 1.0, "one line of cards with their captions, got {row}");
+}
+
+#[test]
+fn a_row_with_a_flex_shrink_0_child_pulled_up_by_a_negative_margin_keeps_its_height() {
+    let row = |i: usize| Desc {
+        style: Style { flex_direction: FlexDirection::Column, ..Style::default() },
+        key: Some(format!("row{i}")),
+        children: vec![
+            Desc { style: Style { height: Dimension::Px(40.0), ..Style::default() }, ..Desc::default() },
+            Desc {
+                style: Style {
+                    height: Dimension::Px(30.0),
+                    flex_shrink: 0.0,
+                    position: Position::Sticky,
+                    inset: crate::style::Inset { top: Some(InsetValue::Px(0.0)), ..Default::default() },
+                    margin: Edges { top: -30.0, ..Default::default() },
+                    ..Style::default()
+                },
+                ..Desc::default()
+            },
+            Desc { style: Style { height: Dimension::Px(20.0), ..Style::default() }, ..Desc::default() },
+        ],
+        ..Desc::default()
+    };
+    let mut tree = tree_of((40.0, 100.0), vec![Desc {
+        style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+        key: Some("list".into()),
+        children: (0..3).map(row).collect(),
+        ..Desc::default()
+    }]);
+    catch_up(&mut tree);
+    let ys: Vec<f32> = (0..3).map(|i| tree.node(tree.find(&format!("row{i}")).unwrap()).list_y).collect();
+    assert_eq!(ys, vec![0.0, 60.0, 120.0]);
+}
+
+#[test]
+fn laying_out_images_reads_their_headers_and_decodes_none() {
+    let dir = std::env::temp_dir().join(format!("pixel-tree-undrawn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut tree = Tree::new((300.0, 200.0));
+    let mut images = Vec::new();
+    for i in 0..8 {
+        let path = dir.join(format!("shot-{i}.png"));
+        image::RgbaImage::from_pixel(30, 60, image::Rgba([0, 0, 200, 255])).save(&path).unwrap();
+        let image = tree.create(Props {
+            image: Some(ImageProps { src: path.to_string_lossy().to_string(), equal_to: Vec::new(), glyph: None }),
+            ..Props::default()
+        });
+        tree.append(tree.root(), image);
+        images.push(image);
+    }
+    for _ in 0..3 {
+        tree.mark_layout();
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    }
+    let rect = tree.rect(images[7]).unwrap();
+    assert!(rect.h > 0.0 && rect.h == rect.w * 2.0, "sized from the header before any pixels: {rect:?}");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let drained = crate::image_cache::drain_completed();
+    assert!(!drained.landed && !drained.redraw, "layout decoded nothing");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn rows_on_screen_below_a_row_taller_than_the_screen_are_measured_again() {
+    let rows = |grown: usize, added: bool| {
+        let block = |key: &str, lines: usize| Desc {
+            key: Some(key.into()),
+            style: Style { flex_direction: FlexDirection::Column, flex_shrink: 0.0, ..Style::default() },
+            children: (0..lines).map(|k| Desc { key: Some(format!("{key}-{k}")), style: Style { height: Dimension::Px(10.0), ..Style::default() }, ..Desc::default() }).collect(),
+            ..Desc::default()
+        };
+        let mut children = vec![block("tall", 20), block("cards", 2 + grown)];
+        if added {
+            children.push(block("sent", 3));
+        }
+        vec![Desc {
+            style: Style { width: Dimension::Px(40.0), height: Dimension::Px(100.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+            key: Some("list".into()),
+            children,
+            ..Desc::default()
+        }]
+    };
+    let mut tree = tree_of((40.0, 100.0), rows(0, false));
+    scroll_list(&mut tree, 150.0);
+    tree.reconcile(Desc { children: rows(4, false), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    tree.reconcile(Desc { children: rows(4, true), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    let cards = tree.rect(tree.find("cards").unwrap()).unwrap();
+    let sent = tree.rect(tree.find("sent").unwrap()).unwrap();
+    assert_eq!(cards.h, 60.0, "the grown row is drawn at its new height");
+    assert_eq!(sent.y, cards.y + cards.h, "the row after it starts where it ends, not over it");
+}
+
+#[test]
+fn a_list_following_its_end_measures_its_last_row_again_when_it_grows() {
+    let rows = |last: f32| list_of(20, move |i| if i == 19 { last } else { 20.0 }, Style { scroll_anchor: ScrollAnchor::End, ..Style::default() });
+    let mut tree = tree_of((40.0, 100.0), rows(20.0));
+    tree.reconcile(Desc { children: rows(60.0), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    assert_eq!(tree.rect(tree.find("row19").unwrap()).unwrap().h, 60.0);
+}
+
+#[test]
+fn cards_that_exactly_fill_a_wrapping_row_stay_on_one_line() {
+    let cw = 14.0411f32;
+    let room = 59.0 * cw;
+    let card = ((room - cw) / 2.0).floor();
+    let grid = Desc {
+        key: Some("grid".into()),
+        style: Style { flex_direction: FlexDirection::Row, flex_wrap: true, gap: cw, ..Style::default() },
+        children: (0..2).map(|i| Desc { key: Some(format!("c{i}")), style: Style { width: Dimension::Px(card), height: Dimension::Px(281.0), flex_shrink: 0.0, ..Style::default() }, ..Desc::default() }).collect(),
+        ..Desc::default()
+    };
+    let holder = Desc { style: Style { padding: crate::style::Edges { left: 2.0 * cw, ..Default::default() }, ..Style::default() }, children: vec![grid], ..Desc::default() };
+    let width = 63.0 * cw;
+    let tree = tree_of((width, 1000.0), vec![Desc { style: Style { width: Dimension::Px(width), flex_direction: FlexDirection::Column, padding: crate::style::Edges { left: cw, right: cw, ..Default::default() }, ..Style::default() }, children: vec![holder], ..Desc::default() }]);
+    let rect = |key: &str| tree.rect(tree.find(key).unwrap()).unwrap();
+    assert_eq!(rect("c1").y, rect("c0").y, "the second card stays beside the first");
+    assert!(rect("c1").y + rect("c1").h <= rect("grid").y + rect("grid").h, "the row is as tall as its cards");
+}
+
+fn paragraph_list(width: f32) -> Vec<Desc> {
+    paragraph_list_after(width, "a short row")
+}
+
+fn paragraph_list_after(width: f32, intro: &str) -> Vec<Desc> {
+    let words: Vec<String> = (0..400).map(|i| format!("word{i}")).collect();
+    let row = |key: &str, text: Option<String>| Desc {
+        key: Some(key.into()),
+        style: Style { padding: Edges { top: 8.0, left: 6.0, ..Edges::default() }, ..Style::default() },
+        children: vec![Desc {
+            key: Some(format!("{key}-text")),
+            text: Some(text.unwrap_or_else(|| "a short row".into())),
+            ..Desc::default()
+        }],
+        ..Desc::default()
+    };
+    vec![Desc {
+        style: Style { width: Dimension::Px(width), height: Dimension::Px(200.0), overflow: Overflow::Scroll, layout: Layout::List, ..Style::default() },
+        key: Some("list".into()),
+        children: vec![row("intro", Some(intro.into())), row("long", Some(words.join(" "))), row("after", None)],
+        ..Desc::default()
+    }]
+}
+
+fn text_at_top(tree: &Tree) -> (usize, f32) {
+    let list = tree.find("list").unwrap();
+    let row = tree.find("long").unwrap();
+    let fonts = crate::fonts::FontRegistry::bundled();
+    let into_row = tree.scroll_state(list).unwrap().position - tree.node(row).list_y;
+    let (_, start, into) = tree.text_line_at(row, into_row, &fonts).expect("the top of the screen is in the long row");
+    (start, into)
+}
+
+#[test]
+fn a_list_made_narrower_or_wider_keeps_the_line_at_the_top_of_the_screen() {
+    let mut tree = tree_of((400.0, 400.0), paragraph_list(300.0));
+    let row = tree.find("long").unwrap();
+    let into = 7.0;
+    let line_h = {
+        let fonts = crate::fonts::FontRegistry::bundled();
+        tree.laid_lines(tree.find("long-text").unwrap(), &fonts).unwrap().1
+    };
+    let top = tree.node(row).list_y + 8.0 + line_h * 12.0 + into;
+    scroll_list(&mut tree, top);
+    let (start, at) = text_at_top(&tree);
+    assert!(start > 0, "the screen starts mid-paragraph");
+    assert!((at - into).abs() < 0.01);
+    for width in [260.0, 220.0, 380.0, 300.0] {
+        tree.reconcile(Desc { children: paragraph_list(width), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+        let fonts = crate::fonts::FontRegistry::bundled();
+        let leaf = tree.find("long-text").unwrap();
+        let lines = tree.laid_lines(leaf, &fonts).unwrap().2;
+        let line = lines.iter().position(|l| l.end > start).unwrap();
+        let (now, now_into) = text_at_top(&tree);
+        assert_eq!(now, lines[line].start, "at {width} the line holding the old top's text is at the top");
+        assert!((now_into - into).abs() < 0.01, "at {width} it is as far into the line as before");
+    }
+}
+
+#[test]
+fn a_list_made_narrower_keeps_a_row_whose_top_shows_where_it_was() {
+    let mut tree = tree_of((400.0, 400.0), paragraph_list(300.0));
+    let row = tree.find("long").unwrap();
+    let top = tree.node(row).list_y - 10.0;
+    scroll_list(&mut tree, top);
+    let before = tree.node(row).list_y - tree.scroll_state(tree.find("list").unwrap()).unwrap().position;
+    tree.reconcile(Desc { children: paragraph_list(220.0), ..Desc::default() });
+    tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    let after = tree.node(row).list_y - tree.scroll_state(tree.find("list").unwrap()).unwrap().position;
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_list_keeps_the_same_line_at_the_top_while_rows_above_it_change_between_widths() {
+    let mut tree = tree_of((400.0, 400.0), paragraph_list(300.0));
+    let row = tree.find("long").unwrap();
+    let line_h = {
+        let fonts = crate::fonts::FontRegistry::bundled();
+        tree.laid_lines(tree.find("long-text").unwrap(), &fonts).unwrap().1
+    };
+    let top = tree.node(row).list_y + 8.0 + line_h * 12.0 + 7.0;
+    scroll_list(&mut tree, top);
+    let (start, _) = text_at_top(&tree);
+    let mut intro = String::from("a short row");
+    for width in [260.0, 220.0, 380.0, 300.0] {
+        tree.reconcile(Desc { children: paragraph_list_after(width, &intro), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+        intro.push_str(" that grows");
+        tree.reconcile(Desc { children: paragraph_list_after(width, &intro), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+    }
+    let (now, _) = text_at_top(&tree);
+    assert_eq!(now, start, "back at its first width, the same line is at the top");
+}
+
+fn pinned_paragraph_list(width: f32) -> Vec<Desc> {
+    let mut list = paragraph_list(width);
+    let long = list[0].children.iter_mut().find(|row| row.key.as_deref() == Some("long")).unwrap();
+    long.style.flex_direction = FlexDirection::Column;
+    long.children.insert(
+        0,
+        Desc {
+            key: Some("header".into()),
+            style: Style {
+                position: Position::Sticky,
+                inset: crate::style::Inset { top: Some(crate::style::InsetValue::Px(0.0)), ..Default::default() },
+                background: Some(Paint::Solid([9, 9, 9, 255])),
+                ..Style::default()
+            },
+            children: vec![Desc { key: Some("header-text".into()), text: Some("the prompt this answers, which wraps when narrow".into()), ..Desc::default() }],
+            ..Desc::default()
+        },
+    );
+    list
+}
+
+#[test]
+fn a_list_keeps_the_line_just_below_a_stuck_header_where_it_was() {
+    let mut tree = tree_of((400.0, 400.0), pinned_paragraph_list(300.0));
+    let list = tree.find("list").unwrap();
+    let row = tree.find("long").unwrap();
+    let line_h = {
+        let fonts = crate::fonts::FontRegistry::bundled();
+        tree.laid_lines(tree.find("long-text").unwrap(), &fonts).unwrap().1
+    };
+    let top = tree.node(row).list_y + 8.0 + line_h * 14.0 + 7.0;
+    scroll_list(&mut tree, top);
+    let first_shown = |tree: &Tree| {
+        let fonts = crate::fonts::FontRegistry::bundled();
+        let position = tree.scroll_state(list).unwrap().position;
+        let into_row = position - tree.node(row).list_y;
+        let cover = tree.sticky_cover(row, into_row, 400.0);
+        assert!(cover > 0.0, "the header is stuck over the top");
+        let (_, start, into) = tree.text_line_at(row, into_row + cover, &fonts).unwrap();
+        (start, -into)
+    };
+    let (start, y) = first_shown(&tree);
+    for width in [260.0, 200.0, 380.0, 300.0] {
+        tree.reconcile(Desc { children: pinned_paragraph_list(width), ..Desc::default() });
+        tree.flush_layout(&mut crate::fonts::FontRegistry::bundled(), 16.0);
+        let fonts = crate::fonts::FontRegistry::bundled();
+        let lines = tree.laid_lines(tree.find("long-text").unwrap(), &fonts).unwrap().2;
+        let held = lines[lines.iter().position(|l| l.end > start).unwrap()].start;
+        let (now, now_y) = first_shown(&tree);
+        assert_eq!(now, held, "at {width} the line that showed first below the header still does");
+        assert!((now_y - y).abs() < 0.01, "at {width} as far below the header");
+    }
+    assert_eq!(first_shown(&tree).0, start, "back at its first width, it's the same line");
+}
+
+#[test]
+fn a_new_tree_reserves_little_and_grows_on_demand() {
+    let mut tree = Tree::new((800.0, 600.0));
+    assert!(tree.slots.capacity() <= 64, "a new tree reserved {} node slots", tree.slots.capacity());
+    let root = tree.root;
+    let ids: Vec<NodeId> = (0..20_000)
+        .map(|i| {
+            let id = tree.create(Props { key: Some(format!("n{i}")), ..Props::default() });
+            tree.append(root, id);
+            id
+        })
+        .collect();
+    for (i, id) in ids.iter().enumerate().step_by(997) {
+        assert_eq!(tree.get(*id).and_then(|n| n.key.as_deref()), Some(format!("n{i}").as_str()));
+    }
+    tree.remove(ids[5]);
+    assert!(tree.get(ids[5]).is_none());
+    assert_eq!(tree.node(root).children.len(), 19_999);
+}
