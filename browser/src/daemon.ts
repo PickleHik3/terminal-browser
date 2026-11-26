@@ -27,7 +27,8 @@ export function buildStamp(): string {
   try {
     const built = Math.floor(fs.statSync(path.join(__dirname, "main.js")).mtimeMs);
     const overrides = Object.keys(process.env).filter((key) => key.startsWith("PIXEL_")).sort().map((key) => `${key}=${process.env[key]}`);
-    return [built, fs.realpathSync(process.execPath), ...overrides].join(" ");
+    const electron = fs.realpathSync(process.execPath);
+    return [built, `${electron}@${Math.floor(fs.statSync(electron).mtimeMs)}`, ...overrides].join(" ");
   } catch {
     return "unknown";
   }

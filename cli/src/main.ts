@@ -163,11 +163,21 @@ function interactiveTty(): string | null {
   return ownTtyPath();
 }
 
+// The Electron the daemon will run, as the daemon names it (daemon.ts buildStamp): its real path
+// and its file's mtime, so an Electron updated in place is a new build too. When this CLI itself
+// runs on Electron (a release: bin/terminal-browser runs it on electron/pixel), that is the same
+// Electron, and process.execPath names it even when electron/pixel is a script that execs it
+// (Termux's build), which realpath of electron/pixel would not.
+function electronStamp(): string {
+  const electron = fs.realpathSync(process.versions.electron ? process.execPath : electronBinary());
+  return `${electron}@${Math.floor(fs.statSync(electron).mtimeMs)}`;
+}
+
 function browserBuildStamp(): string {
   const main = path.resolve(__dirname, "..", "..", "browser", "dist", "main.js");
   try {
     const overrides = [...PASSED_TO_DAEMON].filter((key) => process.env[key] !== undefined).sort().map((key) => `${key}=${process.env[key]}`);
-    return [Math.floor(fs.statSync(main).mtimeMs), fs.realpathSync(electronBinary()), ...overrides].join(" ");
+    return [Math.floor(fs.statSync(main).mtimeMs), electronStamp(), ...overrides].join(" ");
   } catch {
     return "unknown";
   }
@@ -263,7 +273,10 @@ async function openSession(argv: string[], tty: string): Promise<{ socket: net.S
     reply = await ask(socket, browserBuildStamp());
   }
   if (reply.ok === false && reply.error === "stale") {
+    // The daemon that said stale is exiting; connecting before it has gone reaches it, and it
+    // closes the connection ("daemon closed the connection").
     socket.destroy();
+    await sleep(700);
     socket = await daemonSocket();
     reply = await ask(socket, null);
   }
