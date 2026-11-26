@@ -32,8 +32,9 @@ function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM: alive, but another SELinux context (a shell over an sshd that run-as started).
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

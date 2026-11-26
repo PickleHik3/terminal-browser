@@ -288,7 +288,9 @@ async function daemonPid(): Promise<number | null> {
     try {
       process.kill(record.pid, 0);
       return record.pid;
-    } catch {}
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return record.pid;
+    }
   }
   return null;
 }

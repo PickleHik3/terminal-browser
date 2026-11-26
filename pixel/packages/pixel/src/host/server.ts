@@ -154,7 +154,8 @@ function frameDirectory(): string {
     if (!Number.isInteger(pid) || pid === process.pid) continue;
     try {
       process.kill(pid, 0);
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") continue;
       fs.rmSync(path.join(root, entry), { recursive: true, force: true });
     }
   }
