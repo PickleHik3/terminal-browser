@@ -37,7 +37,7 @@ function alive(pid: number) {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // EPERM: alive, but another SELinux context (a shell over an sshd that run-as started).
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    // EPERM or EACCES (an SELinux denial): alive, but another context (a shell over an sshd that run-as started).
+    return ["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
   }
 }

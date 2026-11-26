@@ -289,7 +289,7 @@ async function daemonPid(): Promise<number | null> {
       process.kill(record.pid, 0);
       return record.pid;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EPERM") return record.pid;
+      if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return record.pid;
     }
   }
   return null;

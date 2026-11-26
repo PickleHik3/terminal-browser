@@ -155,7 +155,7 @@ function frameDirectory(): string {
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EPERM") continue;
+      if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
       fs.rmSync(path.join(root, entry), { recursive: true, force: true });
     }
   }
